@@ -1,0 +1,15 @@
+"""Copy to `config.local.py` and fill in. That filename is gitignored.
+
+config.py holds placeholders for anything that identifies a specific site, so
+the repository can be public. Real values go here and override them at import.
+"""
+
+# Wi-Fi module part number, from WatchPower -> Wi-Fi Module Information.
+# Also the SoftAP SSID when pairing.
+DONGLE_PN = "W00344XXXXXXXX"
+
+# None discovers by broadcast; a real address is faster and more reliable.
+DONGLE_IP = None
+
+# Uncomment if this machine picks the wrong interface.
+# LOCAL_IP = "192.168.0.10"

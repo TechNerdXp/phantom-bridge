@@ -1,0 +1,14 @@
+# Runtime state and telemetry. The JSONL logs carry the inverter's serial
+# numbers in their QID/QSID replies, so the whole directory stays out --
+# ignoring only *.jsonl left logs/state.json and logs/handover.json committable.
+logs/
+
+# Real site identifiers. See config.py for what the placeholders mean.
+config.local.py
+
+__pycache__/
+*.pyc
+*.pyo
+*.db
+.venv/
+.env
