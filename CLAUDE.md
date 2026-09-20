@@ -182,7 +182,10 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 
 | File | What |
 |---|---|
-| `config.py` | Every site-specific value. `config.local.py` overrides it, gitignored. |
+| `config.py` | Every site-specific value. `config.local.py` overrides it, gitignored. `ROOT` is the checkout, found from the exe when frozen. |
+| `main.py` | The frozen exe's entry point: `tray` or `collector`, dispatched to that script's `main()`. Crash log for the windowed process. |
+| `icon.py` | Writes `icon.ico` from the tray's own drawing. Build-time only. |
+| `PhantomBridge.spec` | The PyInstaller build: one folder, no console, `icon.ico`. |
 | `probe.py` | Read-only recon: find the dongle, report which transport is available. |
 | `collector.py` | The resident poller. Redirect, poll, log JSONL, publish `logs/state.json`. |
 | `ctl.py` | One-shot CLI: reads, writes, clock, discovery sweep, restore. |
@@ -256,6 +259,39 @@ Both entry points are resident services, started at login from
 `PhantomBridgeTray`), written by `bridge.set_autostart()` and refreshed on
 every launch so a moved folder self-heals. Measured idle cost: ~23 MB and
 ~0.03 s CPU per minute each.
+
+**What runs is the exe, not the sources.** Since 2026-09-20 the two
+services are one PyInstaller build, the RouterOps way:
+
+```
+python icon.py                          # only after changing the tray drawing
+pyinstaller PhantomBridge.spec --clean  # -> dist\PhantomBridge\PhantomBridge.exe
+dist\PhantomBridge\PhantomBridge.exe tray
+dist\PhantomBridge\PhantomBridge.exe collector --quiet --dongle <dongle-ip>
+```
+
+`main.py` is the exe's only entry point and dispatches on the first
+argument; `dist\PhantomBridge\` **is** the installation, so rebuild after
+touching any `.py` -- the sources are not what the Run key starts. One
+folder rather than one file because two of these start at every login and
+a `--onefile` exe unpacks ~15 MB into `%TEMP%` each time. The exe is not
+faster or lighter than `pythonw` (same interpreter, same ~23 MB); it buys
+an identity -- its own icon in Explorer, Task Manager and Startup, its own
+name, and no dependence on the installed Python. No console, so
+`ctl.py`, `insights.py`, `probe.py` and the collector's `--panel` stay
+`python <script>` from the checkout, and the frozen tray/collector write
+an unhandled exception to `logs/crash.log` instead of a console.
+
+Frozen, `__file__` is inside the bundle, so `config.ROOT` finds the
+checkout by walking up from the exe to the first folder holding a
+`config.py`; `config.local.py` and `logs/` are read from there, the same
+files the source-run CLI uses. A source run (`python tray.py` for a debug
+session) does not rewrite a Run value that already points at an existing
+exe -- the exe is the installation once it exists.
+
+`icon.ico` is the tray's own drawing (`tray.render_icon`) at a full green
+100, written by `icon.py` with no Pillow and no GDI. It is committed so a
+clone builds.
 
 Internet is not needed for any of it. Only the clock sync reaches out (SNTP,
 3 s timeout per server) and it degrades to a logged miss.

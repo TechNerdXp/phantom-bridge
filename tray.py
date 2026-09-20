@@ -340,6 +340,40 @@ def make_icon(colour, fraction, soc=None, size=None, alert: bool = False) -> int
     Caller owns the returned HICON and must DestroyIcon it.
     """
     size = size or _icon_size()
+    px = render_icon(colour, fraction, soc, size, alert)
+
+    bmi = BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+    bmi.biWidth, bmi.biHeight = size, -size  # negative = top-down
+    bmi.biPlanes, bmi.biBitCount, bmi.biCompression = 1, 32, 0
+
+    hdc = user32.GetDC(None)
+    bits = ctypes.c_void_p()
+    colour_bmp = gdi32.CreateDIBSection(hdc, ctypes.byref(bmi), 0,
+                                        ctypes.byref(bits), None, 0)
+    user32.ReleaseDC(None, hdc)
+    if not colour_bmp:
+        return user32.LoadIconW(None, ctypes.c_wchar_p(IDI_APPLICATION))
+    ctypes.memmove(bits, bytes(px), len(px))
+
+    # Alpha does the masking on a 32-bpp icon, so the mask bitmap only has to
+    # exist -- but it does have to be deleted, like the colour one.
+    mask_bmp = gdi32.CreateBitmap(size, size, 1, 1, None)
+    info = ICONINFO(True, 0, 0, mask_bmp, colour_bmp)
+    hicon = user32.CreateIconIndirect(ctypes.byref(info))
+    gdi32.DeleteObject(colour_bmp)
+    gdi32.DeleteObject(mask_bmp)
+    return hicon or user32.LoadIconW(None, ctypes.c_wchar_p(IDI_APPLICATION))
+
+
+def render_icon(colour, fraction, soc=None, size: int = 16,
+                alert: bool = False) -> bytearray:
+    """The icon as pixels: a top-down BGRA buffer, `size` square.
+
+    Split from `make_icon` so the same drawing can go somewhere other than
+    an HICON -- icon.py renders it into the .ico the frozen exe wears, so
+    the file in Explorer and the glyph in the tray are one drawing.
+    """
     unit = size / 16.0
     px = bytearray(size * size * 4)          # transparent to start
 
@@ -369,29 +403,7 @@ def make_icon(colour, fraction, soc=None, size=None, alert: bool = False) -> int
     if alert:
         mark = max(3, round(3 * unit))
         _rect(px, size, size - mark, 0, size, mark, RED, 255)
-
-    bmi = BITMAPINFOHEADER()
-    bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-    bmi.biWidth, bmi.biHeight = size, -size  # negative = top-down
-    bmi.biPlanes, bmi.biBitCount, bmi.biCompression = 1, 32, 0
-
-    hdc = user32.GetDC(None)
-    bits = ctypes.c_void_p()
-    colour_bmp = gdi32.CreateDIBSection(hdc, ctypes.byref(bmi), 0,
-                                        ctypes.byref(bits), None, 0)
-    user32.ReleaseDC(None, hdc)
-    if not colour_bmp:
-        return user32.LoadIconW(None, ctypes.c_wchar_p(IDI_APPLICATION))
-    ctypes.memmove(bits, bytes(px), len(px))
-
-    # Alpha does the masking on a 32-bpp icon, so the mask bitmap only has to
-    # exist -- but it does have to be deleted, like the colour one.
-    mask_bmp = gdi32.CreateBitmap(size, size, 1, 1, None)
-    info = ICONINFO(True, 0, 0, mask_bmp, colour_bmp)
-    hicon = user32.CreateIconIndirect(ctypes.byref(info))
-    gdi32.DeleteObject(colour_bmp)
-    gdi32.DeleteObject(mask_bmp)
-    return hicon or user32.LoadIconW(None, ctypes.c_wchar_p(IDI_APPLICATION))
+    return px
 
 
 def preview(soc, fraction=None, size=16) -> str:

@@ -241,9 +241,32 @@ PARALLEL_CONFIRMED = False      # None = unknown, True = twin, False = single
 # Local overrides -- config.local.py is gitignored
 # --------------------------------------------------------------------------
 
-def _load_local_overrides() -> None:
+def _project_root():
+    """The folder that owns config.local.py and logs/.
+
+    From source that is this file's folder. In the frozen exe this module
+    lives inside the bundle, so the root is found from the exe instead: the
+    first ancestor of dist\\PhantomBridge\\PhantomBridge.exe that holds a
+    config.py, which is the checkout two levels up. That rule also holds if
+    the exe is ever copied next to the sources, and it fails soft to the
+    exe's own folder rather than to a temp dir.
+    """
     import pathlib
-    local = pathlib.Path(__file__).with_name("config.local.py")
+    import sys
+    if getattr(sys, "frozen", False):
+        here = pathlib.Path(sys.executable).resolve().parent
+        for candidate in (here, *here.parents):
+            if (candidate / "config.py").exists():
+                return candidate
+        return here
+    return pathlib.Path(__file__).resolve().parent
+
+
+ROOT = _project_root()
+
+
+def _load_local_overrides() -> None:
+    local = ROOT / "config.local.py"
     if local.exists():
         exec(compile(local.read_text(encoding="utf-8"), str(local), "exec"),
              globals())

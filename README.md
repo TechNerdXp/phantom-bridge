@@ -317,16 +317,30 @@ That is why the default loan is 15 minutes and not 30 seconds.
 
 ## Running it as a service
 
+The two resident services ship as one exe, built the RouterOps way:
+
 ```bash
-python collector.py --autostart on --dongle <dongle-ip>
-python collector.py --quiet --dongle <dongle-ip>   # resident, logs only
-pythonw tray.py                                    # tray + watch screen
+pyinstaller PhantomBridge.spec --clean       # -> dist\PhantomBridge\PhantomBridge.exe
+dist\PhantomBridge\PhantomBridge.exe collector --autostart on --dongle <dongle-ip>
+dist\PhantomBridge\PhantomBridge.exe collector --quiet --dongle <dongle-ip>
+dist\PhantomBridge\PhantomBridge.exe tray    # tray + watch screen; ticks its own autostart
 ```
+
+`dist\PhantomBridge\` is the installation: rebuild after editing any `.py`.
+The exe has no console, so it carries only the tray and the collector;
+`ctl.py`, `insights.py`, `probe.py` and `collector.py --panel` are run from
+the checkout with `python`, and they read the same `logs/` and
+`config.local.py` the exe does. From source the same two services are
+`python collector.py --quiet --dongle <dongle-ip>` and `pythonw tray.py`.
+The exe costs what `pythonw` costs; what it adds is its own icon and name
+everywhere Windows shows a process, and independence from the installed
+Python. An unhandled exception in the windowed exe lands in `logs/crash.log`.
 
 Autostart writes to `HKCU\...\CurrentVersion\Run` and is rewritten on every
 launch, so moving the folder self-heals rather than silently starting nothing
 after the next reboot. Turn it off with `--autostart off`, or untick
-"Start at login" in the tray menu.
+"Start at login" in the tray menu. A source run leaves an entry that points
+at an existing exe alone.
 
 Measured idle cost with both resident: ~23 MB each and roughly 0.03 s of CPU
 per minute. The watch screen adds no process -- it is a window in the tray.

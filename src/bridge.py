@@ -24,6 +24,9 @@ import link as linkmod
 import netutil
 import pi30
 
+# From source the two agree. Frozen, __file__ is inside the bundle and only
+# config knows where the checkout is (see config._project_root).
+_ROOT = config.ROOT
 LOG_DIR = _ROOT / "logs"
 
 
@@ -516,7 +519,13 @@ def launch_command(script: str, args=(), windowed: bool = True) -> str:
 
     `windowed` picks pythonw.exe, which runs with no console window -- right
     for anything resident, wrong for anything whose output you want to read.
+
+    Frozen, the command is the exe itself with the script's name as its
+    task: `PhantomBridge.exe collector --quiet`. main.py dispatches it.
     """
+    if getattr(sys, "frozen", False):
+        parts = ['"%s"' % sys.executable, pathlib.Path(script).stem]
+        return " ".join(parts + list(args))
     launcher = pathlib.Path(sys.executable)
     if windowed:
         candidate = launcher.with_name("pythonw.exe")
@@ -527,16 +536,27 @@ def launch_command(script: str, args=(), windowed: bool = True) -> str:
     return " ".join(parts)
 
 
-def autostart_enabled(value_name: str) -> bool:
+def autostart_command(value_name: str) -> str | None:
+    """The Run value as written, or None when autostart is off."""
     if sys.platform != "win32":
-        return False
+        return None
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            winreg.QueryValueEx(key, value_name)
-        return True
+            value, _ = winreg.QueryValueEx(key, value_name)
+        return str(value)
     except OSError:
-        return False
+        return None
+
+
+def autostart_enabled(value_name: str) -> bool:
+    return autostart_command(value_name) is not None
+
+
+def _runs_frozen_exe(command: str) -> bool:
+    """Does this Run value start with a PhantomBridge exe that still exists?"""
+    head = command.split('"')[1] if command.startswith('"') else command.split(" ")[0]
+    return head.lower().endswith(".exe") and pathlib.Path(head).exists()
 
 
 def set_autostart(value_name: str, enable: bool, script: str, args=(),
@@ -563,6 +583,14 @@ def refresh_autostart(value_name: str, script: str, args=(),
     The trap RouterOps hit: `autostart_enabled()` only asks whether the value
     exists, so a stale path still shows a tick in the menu and the only symptom
     is nothing starting after a reboot.
+
+    One exception: a source run (`python tray.py` for a debug session) does
+    not demote an entry that points at the built exe. The exe is the
+    installation once it exists; the sources are for working on it.
     """
-    if autostart_enabled(value_name):
-        set_autostart(value_name, True, script, args, windowed)
+    current = autostart_command(value_name)
+    if current is None:
+        return
+    if not getattr(sys, "frozen", False) and _runs_frozen_exe(current):
+        return
+    set_autostart(value_name, True, script, args, windowed)
