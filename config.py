@@ -171,6 +171,29 @@ BATTERY_MAX_A = 100.0
 # (2026-09-20, 07:18: five flips in a minute), and each flip was a balloon.
 TRAY_NOTIFICATIONS = False
 
+# The icon's colour ladder (the rule is spelled out over the palette in
+# tray.py). Level wins over everything: red under the critical percentage or
+# at the voltage floor, orange under the low percentage. Above that, three
+# concerns add up a step each -- not full, heavy draw, house on the pack
+# alone -- green, blue, orange, red. The SOC is voltage-derived, so the
+# voltage floor is the backstop for the percentage, and "full" sits a little
+# under 100 because the reading hovers there at float; set it to 100 to
+# demand the digit. Heavy is amps out of the pack. The pack is sold as 5 kWh
+# but delivers about 2 kWh in practice (under investigation, Oracle #29), so
+# 15 A -- roughly 0.8 kW at the bus -- already empties it in a couple of
+# hours and counts as heavy here.
+#
+# This block, the comment over the palette in tray.py and Reading.colour
+# under it are the ONE place the concerns live. A bigger bank weighs them
+# differently: heavy should then be time-to-empty at the current draw (from
+# BATTERY_CAPACITY_AH), not a bigger amp figure, and the low bands should
+# be hours left, not percent. Not done; sized to this pack only.
+TRAY_LOW_SOC = 30
+TRAY_CRITICAL_SOC = 20
+TRAY_CRITICAL_V = 47.0
+TRAY_FULL_SOC = 97
+TRAY_HEAVY_DISCHARGE_A = 15.0
+
 
 # --------------------------------------------------------------------------
 # Energy counters

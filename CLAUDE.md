@@ -104,7 +104,14 @@ Not done, deliberately: no power-behaviour write has ever been sent.
    Cadence tightens to 1 s automatically on battery, 5 s otherwise.
 3. **All the controls.** The full PI30 setter catalogue is in `src/pi30.py`
    and exposed via `ctl.py set`, behind `ALLOW_WRITES`.
-4. **Battery readout in the tray.** `tray.py`, stdlib ctypes Win32.
+4. **Battery readout in the tray.** `tray.py`, stdlib ctypes Win32. The
+   icon's colour is the owner's ladder of concerns (not full, heavy draw,
+   house on the pack alone: green/blue/orange/red, with low and critical
+   on top), consolidated in one place: the tray block of `config.py`, the
+   comment over the palette in `tray.py` and `Reading.colour` under it.
+   The thresholds are sized to this ~2 kWh pack; a bigger bank weighs
+   them differently (noted in that config block). Green, red and grey match RouterOps
+   because the two icons share a tray.
 5. **A watch screen worth replacing the app with.** `watch.py`: a native
    window opened from the tray -- the four pillars (solar, grid, home,
    battery) around the inverter, an arrow per leg whose direction is the

@@ -35,10 +35,15 @@ reconnect until the mutex is free again.
 The inverter's SOC is voltage-derived unless closed-loop BMS comms are
 confirmed, and on a flat LiFePO4 curve that number is close to meaningless.
 So the icon shows it, because it was asked for and it is the only percentage
-there is -- but the *colour* is driven by the two things that are solid: work
-mode and discharge current. The tooltip always states the basis and carries
-the battery voltage, which is the honest number. Set TRUST_SOC in config.py
-once BMS comms are confirmed and the caveat goes away.
+there is. The *colour* is a ladder of concern set by the owner (see the
+comment over the palette): how hard the pack is being drawn, whether it is
+carrying the house alone, and whether it is still full, with the low bands
+on top of everything and the battery voltage as their backstop, since 47 V
+is a low pack whatever the percentage claims. The bands are in config.py
+(TRAY_LOW_SOC, TRAY_CRITICAL_SOC, TRAY_FULL_SOC, TRAY_HEAVY_DISCHARGE_A). The tooltip
+always states the basis and carries the battery voltage, which is the honest
+number. Set TRUST_SOC in config.py once BMS comms are confirmed and the
+caveat goes away.
 """
 from __future__ import annotations
 
@@ -219,14 +224,28 @@ kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
 # -- the glyph ----------------------------------------------------------------
 
-# Colours are driven by mode and current, never by the percentage, because the
-# percentage is the part we do not trust.
-GREEN = (90, 200, 110)      # charging from grid or PV
-BLUE = (100, 170, 235)      # on grid, battery idle
-AMBER = (255, 176, 0)       # on battery, comfortable
-ORANGE = (255, 120, 40)     # on battery, getting on with it
-RED = (235, 60, 60)         # on battery and low, or a fault
-GREY = (140, 140, 140)      # no data
+# The colour is a ladder of concern, written by the owner (2026-09-20) and
+# read here as three concerns that add up, one step each:
+#   the pack is not full          (SOC under TRAY_FULL_SOC)
+#   the draw is heavy             (TRAY_HEAVY_DISCHARGE_A or more out)
+#   the house is on the pack alone (flow.source == "battery": no sun in it,
+#                                   the grid not carrying -- present or not)
+#   0 concerns GREEN, 1 BLUE, 2 ORANGE, 3 RED.
+# So a full pack under a light draw with the sun still in it is green; the
+# same draw once the pack is below full is blue; heavy on a part-drained pack
+# is orange, as is carrying the house alone; heavy and alone below full is
+# red. Charging and resting are green: nothing is coming out of the pack.
+# On top of the ladder, level wins: under TRAY_LOW_SOC is orange and under
+# TRAY_CRITICAL_SOC, or the pack voltage at TRAY_CRITICAL_V, is red,
+# whatever the pack is doing. Grey is no data.
+# Green, red and grey are RouterOps' tray colours (its tray.py keeps
+# them as BGR; these are the same values as RGB), because the two icons sit
+# side by side and one green must mean "good" in both.
+GREEN = (76, 175, 80)       # no concern: charging, resting, or full and light
+BLUE = (100, 170, 235)      # one concern
+ORANGE = (255, 120, 40)     # two concerns, or low
+RED = (229, 57, 53)         # three concerns, or critical
+GREY = (158, 158, 158)      # no data
 
 SHELL_ALPHA = 200           # battery outline
 FILL_ALPHA = 255
@@ -237,12 +256,15 @@ def _icon_size() -> int:
     return user32.GetSystemMetrics(SM_CXSMICON) or 16
 
 
-# A 3x5 pixel font. At a 16 px icon "73" is 7 px wide and "100" is 11 px, so
-# the real percentage fits without abbreviating it -- which is the whole point
-# of putting the number on the icon rather than only in the tooltip.
+# A 5-row pixel font, 3 px wide except the "1", which is a single column.
+# The narrow 1 is what lets "100" take the same scale as "73" at 16 px: at
+# scale 2 with 1 px gaps it is exactly 16 px wide, where a 3-wide 1 forced it
+# down to scale 1 -- a 5 px tall number at the one value that deserves to
+# look full. The real percentage is drawn, never abbreviated: that is the
+# whole point of putting the number on the icon rather than in the tooltip.
 DIGITS = {
     "0": ("111", "101", "101", "101", "111"),
-    "1": ("010", "110", "010", "010", "111"),
+    "1": ("1", "1", "1", "1", "1"),
     "2": ("111", "001", "111", "100", "111"),
     "3": ("111", "001", "111", "001", "111"),
     "4": ("101", "101", "111", "001", "001"),
@@ -253,7 +275,27 @@ DIGITS = {
     "9": ("111", "101", "111", "001", "111"),
     "-": ("000", "000", "111", "000", "000"),
 }
-GLYPH_W, GLYPH_H = 3, 5
+GLYPH_H = 5
+
+
+def _gap(scale: int) -> int:
+    """Air between glyphs: half the pixel scale, never less than a pixel."""
+    return max(1, scale // 2)
+
+
+def _text_width(text: str, scale: int) -> int:
+    return (sum(len(DIGITS[c][0]) for c in text if c in DIGITS) * scale
+            + (len(text) - 1) * _gap(scale))
+
+
+def _fit_scale(text: str, size: int, bar_top: int) -> int:
+    """Largest pixel scale whose glyphs fit above the bar, with a pixel of
+    air over it, and across the full icon width."""
+    scale = 1
+    while (GLYPH_H * (scale + 1) <= bar_top - 1
+           and _text_width(text, scale + 1) <= size):
+        scale += 1
+    return scale
 
 
 def _rect(px, size, x0, y0, x1, y1, colour, alpha) -> None:
@@ -266,21 +308,19 @@ def _rect(px, size, x0, y0, x1, y1, colour, alpha) -> None:
 
 
 def _draw_text(px, size, text, colour, alpha, scale, top) -> None:
-    """Centre a run of 3x5 glyphs horizontally at `top`, scaled by `scale`."""
-    gap = scale
-    width = len(text) * GLYPH_W * scale + (len(text) - 1) * gap
-    left = (size - width) // 2
-    for index, char in enumerate(text):
+    """Centre a run of glyphs horizontally at `top`, scaled by `scale`."""
+    ox = (size - _text_width(text, scale)) // 2
+    for char in text:
         glyph = DIGITS.get(char)
         if glyph is None:
             continue
-        ox = left + index * (GLYPH_W * scale + gap)
         for row, bits in enumerate(glyph):
             for col, bit in enumerate(bits):
                 if bit == "1":
                     x = ox + col * scale
                     y = top + row * scale
                     _rect(px, size, x, y, x + scale, y + scale, colour, alpha)
+        ox += len(glyph[0]) * scale + _gap(scale)
 
 
 def make_icon(colour, fraction, soc=None, size=None, alert: bool = False) -> int:
@@ -310,15 +350,7 @@ def make_icon(colour, fraction, soc=None, size=None, alert: bool = False) -> int
     bar_h = max(2, round(2 * unit))
     bar_top = size - bar_h
 
-    # Largest scale whose glyphs fit the height above the bar and the icon
-    # width, keeping at least a pixel of air between the digits and the bar.
-    def width_at(sc):
-        return len(text) * GLYPH_W * sc + (len(text) - 1) * sc
-
-    scale = 1
-    while (GLYPH_H * (scale + 1) <= bar_top - 1
-           and width_at(scale + 1) <= size - 2):
-        scale += 1
+    scale = _fit_scale(text, size, bar_top)
 
     # Centred in the whole space above the bar. Centring inside a smaller
     # "available" band was what made the glyph sit high with a dead strip
@@ -371,13 +403,7 @@ def preview(soc, fraction=None, size=16) -> str:
     bar_h = max(2, round(2 * unit))
     bar_top = size - bar_h
 
-    def width_at(sc):
-        return len(text) * GLYPH_W * sc + (len(text) - 1) * sc
-
-    scale = 1
-    while (GLYPH_H * (scale + 1) <= bar_top - 1
-           and width_at(scale + 1) <= size - 2):
-        scale += 1
+    scale = _fit_scale(text, size, bar_top)
     _draw_text(px, size, text, (255, 255, 255), FILL_ALPHA, scale,
                max(0, (bar_top - GLYPH_H * scale) // 2))
     _rect(px, size, 0, bar_top, size, size, (255, 255, 255), EMPTY_ALPHA)
@@ -425,22 +451,24 @@ class Reading:
             return GREY
         if self.stale or not self.flow:
             return GREY
-        if self.flow.get("on_battery"):
-            soc = self.soc
-            volts = self.flow.get("batt_v") or 0
-            # Voltage is the honest low-battery signal; SOC only refines it.
-            if volts and volts <= 47.0:
-                return RED
-            if soc is not None and soc < 20:
-                return RED
-            if soc is not None and soc < 45:
-                return ORANGE
-            return AMBER
-        if (self.flow.get("batt_w") or 0) > 20:
-            return GREEN
-        if self.flow.get("grid_present"):
-            return BLUE
-        return RED
+        soc = self.soc
+        volts = self.flow.get("batt_v") or 0
+        # Low wins over everything else. Voltage is the honest low signal
+        # and backs the percentage up: 47 V is a low pack whatever the
+        # voltage-derived SOC claims.
+        if volts and volts <= config.TRAY_CRITICAL_V:
+            return RED
+        if soc is not None and soc < config.TRAY_CRITICAL_SOC:
+            return RED
+        if soc is not None and soc < config.TRAY_LOW_SOC:
+            return ORANGE
+        discharge_a = self.flow.get("batt_discharge_a") or 0
+        if discharge_a <= 0:
+            return GREEN                     # charging or resting
+        concerns = ((soc is not None and soc < config.TRAY_FULL_SOC)
+                    + (discharge_a >= config.TRAY_HEAVY_DISCHARGE_A)
+                    + (self.flow.get("source") == "battery"))
+        return (GREEN, BLUE, ORANGE, RED)[concerns]
 
     def headline(self) -> str:
         if self.handover_s > 0:
