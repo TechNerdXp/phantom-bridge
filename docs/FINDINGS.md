@@ -357,7 +357,6 @@ already integrated from samples. The inverter's per-day counter is
 authoritative for the finished day but is not live, so the screen shows the
 larger of the counter and the integrated figure for "today so far".
 
-## Next entry goes here
 
 ### 2026-09-20 -- one redirect is not enough after an abrupt session loss
 
@@ -378,3 +377,5 @@ Also today: the resident pair ships as `dist\PhantomBridge\PhantomBridge.exe`
 mutex still refuses a second collector (exit 1, no crash), and the exe finds
 the checkout's `config.local.py` and `logs/` from `dist\` two levels down.
 Idle cost after the switch: 25 MB collector, 30 MB tray -- what pythonw cost.
+
+## Next entry goes here
