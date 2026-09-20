@@ -358,3 +358,23 @@ authoritative for the finished day but is not live, so the screen shows the
 larger of the counter and the integrated figure for "today so far".
 
 ## Next entry goes here
+
+### 2026-09-20 -- one redirect is not enough after an abrupt session loss
+
+Swapping the pythonw collector for the frozen exe meant killing the running
+collector, so the dongle kept a half-open TCP session to a process that was
+gone. The new collector sent `set>server=` once on start, got `rsp>server=1;`,
+and then waited: three minutes of nothing, with 8899 listening and no
+inbound connection. A second, hand-sent redirect brought the dongle in within
+8 s. So the acknowledgement means "config stored", not "session moved" -- the
+dongle only reconnects once it notices its old session is dead, or is told
+again. `bridge.open_link` now waits in slices and re-sends the redirect
+between them (`REDIRECT_RETRY_SECONDS`, 30 s); the poll loop already did the
+same for a link that dies mid-run. On the next restart the dongle connected
+within 20 s.
+
+Also today: the resident pair ships as `dist\PhantomBridge\PhantomBridge.exe`
+(PyInstaller, one folder, no console). Two things checked frozen: the arbiter
+mutex still refuses a second collector (exit 1, no crash), and the exe finds
+the checkout's `config.local.py` and `logs/` from `dist\` two levels down.
+Idle cost after the switch: 25 MB collector, 30 MB tray -- what pythonw cost.

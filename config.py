@@ -73,6 +73,11 @@ DEVADDR = 0x01        # inverter address on the RS-485 bus
 
 POLL_INTERVAL = 5           # seconds between cycles on grid
 BATTERY_POLL_INTERVAL = 1   # tighter cadence once we are on battery
+# While waiting for the dongle to connect after a redirect, send the redirect
+# again this often. One is not always enough: a dongle still holding the
+# previous collector's half-open session acknowledges the first and moves
+# on the second (seen 2026-09-20).
+REDIRECT_RETRY_SECONDS = 30
 COMMAND_TIMEOUT = 6.0       # per-command reply timeout
 COMMAND_GAP = 0.25          # pause between commands in a cycle
 

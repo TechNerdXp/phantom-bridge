@@ -116,7 +116,7 @@ def open_link(*, direct: str | None = None, dongle: str | None = None,
     server.start()
     announce(f"Listening on 0.0.0.0:{config.LOCAL_PORT}  (we are {host})")
 
-    if redirect:
+    def send_redirect_once() -> None:
         target = f"{host}:{config.LOCAL_PORT}"
         announce(f"Redirecting dongle -> {target}")
         linkmod.udp_config(f"set>server={target};",
@@ -125,8 +125,28 @@ def open_link(*, direct: str | None = None, dongle: str | None = None,
                            netutil.broadcast_addresses(config.LAN_CIDR_BITS),
                            log=announce)
 
+    if redirect:
+        send_redirect_once()
+
+    # One redirect is not always enough. When the previous collector died
+    # without closing (a kill, a crash, a shutdown), the dongle still holds
+    # that half-open session and answers `rsp>server=1;` without dropping
+    # it; a second redirect a little later is what actually moves it (seen
+    # 2026-09-20: 3 min of silence, then connected within 8 s of the
+    # re-send). So the wait is in slices, with the redirect repeated
+    # between them -- the same rule the poll loop applies to a dead link.
     announce(f"Waiting up to {wait:.0f}s for the dongle to connect ...")
-    if server.wait_for_session(wait) is None:
+    deadline = time.monotonic() + wait
+    session = None
+    while session is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        session = server.wait_for_session(min(config.REDIRECT_RETRY_SECONDS,
+                                              remaining))
+        if session is None and redirect and time.monotonic() < deadline:
+            send_redirect_once()
+    if session is None:
         announce("")
         announce("No connection. The usual causes, in order:")
         announce("  * Windows Firewall is dropping it. Run, elevated:")
