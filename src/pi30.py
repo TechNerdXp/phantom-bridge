@@ -12,6 +12,7 @@ of being silently dropped.
 """
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 
 
@@ -70,12 +71,14 @@ QPIGS_FIELDS = [
     ("pv_charge_w",       _int, "W"),
     ("status_bits2",      _str, ""),
     # Fields 22-24 are not in the base 21-field spec but this unit sends them
-    # (observed 2026-09-19: trailing "0 01 0000"). Named from the PI30 grid-feed
-    # extension; the values have not been made to move yet, so treat the names
-    # as probable rather than settled.
+    # (observed 2026-09-19: trailing "0 01 0000"). 22 and 23 are named from the
+    # PI30 grid-feed extension and have never moved. Field 24 was first mapped
+    # as solar feed watts and then seen reading 81 at 02:00 and 72 at 07:02 on
+    # 2026-09-20 with no sun -- so it is NOT solar feed. Logged raw until it
+    # is understood.
     ("solar_feed_to_grid", _int, ""),
     ("country_code",       _str, ""),
-    ("solar_feed_w",       _int, "W"),
+    ("unknown_24",         _int, ""),
 ]
 
 # QPIRI -- rated values. Settles the one-chassis-or-two question.
@@ -351,6 +354,38 @@ def decode_raw(text: str) -> dict:
     return {"raw": text.strip(), "tokens": _split(text)}
 
 
+def decode_wh(text: str) -> dict:
+    """The energy counters: one zero-padded integer, watt-hours.
+
+    >>> decode_wh("00012362")
+    {'wh': 12362, 'kwh': 12.362}
+    """
+    wh = _int(text.strip())
+    return {"wh": wh, "kwh": None if wh is None else round(wh / 1000.0, 3)}
+
+
+# The dated energy counters take a date suffix: QED20260920, QEM202609, QEY2026.
+# Confirmed answering on this unit 2026-09-20.
+ENERGY_PREFIXES = ("QED", "QLD", "QEM", "QLM", "QEY", "QLY")
+
+
+def energy_command(kind: str, day: dt.date, span: str = "day") -> str:
+    """Build a dated energy read. kind: "pv" (QE*) or "load" (QL*).
+
+    >>> import datetime as dt
+    >>> energy_command("pv", dt.date(2026, 9, 20))
+    'QED20260920'
+    >>> energy_command("load", dt.date(2026, 9, 20), "month")
+    'QLM202609'
+    """
+    prefix = "QE" if kind == "pv" else "QL"
+    if span == "day":
+        return prefix + "D" + day.strftime("%Y%m%d")
+    if span == "month":
+        return prefix + "M" + day.strftime("%Y%m")
+    return prefix + "Y" + day.strftime("%Y")
+
+
 # --------------------------------------------------------------------------
 # read catalogue
 # --------------------------------------------------------------------------
@@ -386,8 +421,17 @@ READS: dict[str, Read] = {r.command: r for r in [
     Read("QPGS1",    "Parallel unit 1 status -- answers only on a twin", decode_qpgs, certain=False),
     Read("QPGS2",    "Parallel unit 2 status", decode_qpgs, certain=False),
     Read("QPGS3",    "Parallel unit 3 status", decode_qpgs, certain=False),
-    Read("QET",      "Total generated energy, Wh", decode_raw, certain=False),
-    Read("QLT",      "Total load energy, Wh", decode_raw, certain=False),
+    Read("QET",      "Total generated energy, Wh", decode_wh),
+    Read("QLT",      "Total load energy, Wh", decode_wh),
+    # Dated forms -- QED<yyyymmdd>, QLD<yyyymmdd>, QEM<yyyymm>, QLM<yyyymm>,
+    # QEY<yyyy>, QLY<yyyy>. All six answered on 2026-09-20; the day form is
+    # what feeds the "today" line and the panel-cleaning trend.
+    Read("QED",      "PV energy for one day, Wh (QED<yyyymmdd>)", decode_wh),
+    Read("QLD",      "Load energy for one day, Wh (QLD<yyyymmdd>)", decode_wh),
+    Read("QEM",      "PV energy for one month, Wh (QEM<yyyymm>)", decode_wh),
+    Read("QLM",      "Load energy for one month, Wh (QLM<yyyymm>)", decode_wh),
+    Read("QEY",      "PV energy for one year, Wh (QEY<yyyy>)", decode_wh),
+    Read("QLY",      "Load energy for one year, Wh (QLY<yyyy>)", decode_wh),
 ]}
 
 
@@ -396,11 +440,15 @@ def decode(command: str, text: str) -> dict:
 
     >>> decode("QMOD", "L")["mode_name"]
     'line'
+    >>> decode("QED20260919", "00012362")["kwh"]
+    12.362
     """
     base = command.upper()
     spec = READS.get(base)
     if spec is None and base.startswith("QPGS"):
         spec = READS.get("QPGS0")
+    if spec is None and base[:3] in ENERGY_PREFIXES:
+        spec = READS.get(base[:3])
     if spec is None:
         return decode_raw(text)
     decoder = spec.decoder

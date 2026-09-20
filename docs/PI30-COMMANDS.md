@@ -26,6 +26,9 @@ inverter answered and refused, not that the link failed.
 | `QBEQI` | yes | Equalization state | |
 | `QT` | yes | `YYYYMMDDHHMMSS` | **The clock readback that proves `DAT`** |
 | `QET` / `QLT` | yes | Wh totals | Lifetime generated / load |
+| `QED<yyyymmdd>` / `QLD<yyyymmdd>` | yes | Wh for one day | **Daily production and use.** Counters start 2026-09-04 |
+| `QEM<yyyymm>` / `QLM<yyyymm>` | yes | Wh for one month | |
+| `QEY<yyyy>` / `QLY<yyyy>` | yes | Wh for one year | |
 | `QOPM` | **NAK** | — | |
 | `QBOOT` | **NAK** | — | |
 | `QPGS0`–`QPGS3` | **NAK** | — | Single chassis; see below |
@@ -33,9 +36,11 @@ inverter answered and refused, not that the link failed.
 ### QPIGS has 24 fields, not 21
 
 The documented 21-field map aligned exactly, and this firmware appends three
-more (`0 01 0000`). They are mapped as the grid-feed extension —
-`solar_feed_to_grid`, `country_code`, `solar_feed_w` — which is a probable
-naming, not a proven one: none has been made to move yet.
+more (`0 01 0000`). The first two are mapped as the grid-feed extension —
+`solar_feed_to_grid`, `country_code` — and have never moved. The third was
+first taken for solar feed watts and then seen at 81 and 72 in the dark
+(2026-09-20), so it is not that; it is carried as `unknown_24` until it is
+understood.
 
 ### QPIWS bit a0 is not a fault flag here
 

@@ -21,7 +21,8 @@ WatchPower works, but it is a menu, not a bus:
 | Coarse load monitoring | `QPIGS` at 1–5 s, decoded into named fields |
 | Grid/battery state buried in a UI | `QMOD` + discharge current, machine-readable |
 | Vendor-chosen settings only | The full PI30 setter catalogue |
-| Nothing at a glance | A battery percentage in the notification area |
+| Nothing at a glance | A battery percentage in the notification area, and a watch screen |
+| History is a graph in an app | The inverter's own daily counters, 30 days back, and a usage report from the logs |
 
 ## How it works
 
@@ -51,17 +52,18 @@ probe.py         recon: find the dongle, report which transport is available
 collector.py     the resident poller: redirect, poll, log, publish state
 ctl.py           one-shot CLI: reads, writes, clock, discovery, restore
 tray.py          Windows notification-area battery readout
-web.py           the watch screen: local dashboard, phone-reachable
-web/index.html   that dashboard, one self-contained file
+watch.py         the watch screen: a native GDI/GDI+ window, opened from the tray
+insights.py      usage report from the logs: peaks, sun hours, battery episodes
 src/frames.py    CRC, escaping, Eybond framing, dialect detection
 src/pi30.py      command catalogue + response decoders
 src/link.py      transport: server / direct / dry-run links
-src/bridge.py    shared connect, log, poll and clock-sync
+src/bridge.py    shared connect, log, poll, energy counters and clock-sync
 src/flow.py      power-flow derivation + the ASCII panel
+src/energy.py    the day book: inverter counters plus integrated battery/grid
 src/clock.py     SNTP client and clock encoding
 src/arbiter.py   link arbitration and the no-spin idle wait
 src/netutil.py   LAN address, broadcast and firewall helpers
-logs/            one JSONL file per day, plus state.json for the tray
+logs/            one JSONL file per day, state.json for the tray, energy.json per day
 ```
 
 ## Running it
@@ -94,6 +96,10 @@ python collector.py --panel     # the flow panel instead of raw JSON
 
 # 7. the tray readout (no console window)
 pythonw tray.py
+
+# 8. what the last week looked like -- reads the logs, opens no link
+python insights.py
+python insights.py --date 2026-09-19
 
 # hand the dongle back to the vendor cloud
 python collector.py --restore
@@ -134,8 +140,15 @@ percentage drawn into the icon, with a proportional bar under it, coloured by
 what is actually trustworthy — work mode and discharge current, not the
 percentage.
 
-- green: charging | blue: on grid, idle | amber/orange/red: on battery
+- green: charging | blue: on grid, idle | amber/orange/red: drawing on the pack
+- the headline says who is carrying the house: on solar, on grid, solar +
+  battery, on battery, grid out. Not the raw work mode -- `QMOD = B` is
+  inverter mode, which is where the unit sits all day on solar.
 - grey: no data, or another task holds the link
+- a leg at its limit (grid line, home lines or battery -- the same rule as
+  the watch screen's arrows): a red mark in the top-right corner, alternating
+  with the plain icon every half second. The digits and the bar stay the
+  battery's, in the battery's colour. The tooltip names the leg.
 - Right-click for refresh, logs, clock sync, restore and start-at-login.
 
 By default it opens **no link at all**: it reads `logs/state.json` that the
@@ -144,33 +157,137 @@ sessions.
 
 ## The watch screen
 
+Left-click the tray icon (or **Open watch screen** in its menu). A native
+window, painted with GDI and GDI+ in the tray's own process -- no browser, no
+console, no second interpreter, no port.
+
+The vendor app shows one thing at a time and leads with volts and hertz. This
+shows **the four pillars of the energy balance at once** -- solar above, grid
+left, home right, battery below -- around the inverter, with an arrow on each
+leg. The arrow points the way the current flows and its thickness is the
+watts, on **one shared scale**, so a fat arrow means the same thing on every
+leg. Watts lead at every pillar, in the big face; the volts, amps, hertz, VA
+and power factor sit under them in a small monospace face for whoever wants
+them. The battery pillar is a tank: a liquid level inside a circle with the
+percentage on it, the empty part drawn as the tank body, so 40% reads as
+60% empty at a glance.
+
+```
+  Phantom II                                          SOLAR + BATTERY
+                        [ solar ]
+                         1,240 W
+                       312 V  4.0 A
+                            |
+    [ grid ]   ---->   [ PHANTOM II ]   ---->   [ home ]
+     0 W                 INVERTER                1,650 W
+  235 V 50.0 Hz           mode B              220 V 50.0 Hz  7.5 A
+  present, on standby       ^                 1,700 VA  pf 0.97  27% of 6 kVA
+                            |
+                        ( 66 % )
+                         -476 W
+                   52.9 V  9 A  discharging
+
+  Drawing on the pack by priority (SBU)                        history >
+```
+
+The header is the verdict -- who is carrying the house -- and not the raw
+work mode. `QMOD = B` is "battery mode" in the vendor's words, but on this
+family it means the inverter stage is making the AC from the DC bus, which
+the sun feeds too; the unit sits in B all day on solar with the pack
+charging. The screen used to print that as ON BATTERY. Now the box says
+INVERTER or GRID BYPASS and the header says ON SOLAR, SOLAR + BATTERY,
+ON BATTERY, GRID OUT or ON GRID from the currents.
+
+Under the board there is one line of status and, at the right, "history >",
+which opens the history window. The day's figures and the cable bar that
+used to sit here live there now; the arrows carry the limits.
+
+Every arrow also wears its own limit. The grid leg is judged against the
+7/29 on the input (`GRID_LINE_RATING_A`; its amps are derived, watts over
+grid volts), the home leg against one line's rating with both lines summed
+(the split is unknown, so red means one line *could* be at its limit), and
+the battery leg against the pack (`BATTERY_CONTINUOUS_A` amber,
+`BATTERY_MAX_A` red, charging and discharging alike). Amber near the limit,
+red at it, and at it the arrow, its figure and the status line blink on a
+half-second timer that runs only while something is at its limit.
+
+It repaints on `WM_APP_SAMPLE` -- once per collector sample, and only while
+the window is open. **A closed window costs nothing**: no timer, no poll, no
+thread. That is why it is a window and not a web page; a browser tab costs
+100-300 MB to render 800 bytes of JSON. `python watch.py --png out.png`
+renders one frame to a file, which is how the layout is checked.
+
+No notifications. A balloon on grid-lost/grid-back was tried and removed on
+request: the inverter flips between line and battery mode every few seconds
+around dawn while the sun is not quite enough, and each flip was a balloon.
+`TRAY_NOTIFICATIONS` in config turns it back on for anyone who wants it.
+
+
+## The power history
+
+**Power history** in the tray menu, or click the day strip at the bottom of
+the watch screen. The same native window plumbing, four tabs:
+
+- **Day**, midnight to midnight: solar as a filled area, the house as a
+  line, the derived grid leg as a line, the state of charge as a thin line
+  on its own 0-100 % axis on the right. Under it the battery's own strip,
+  charging up from the centre in green and discharging down in amber. Every
+  on-battery episode is shaded amber across both, every grid outage red, so
+  *when the house runs on the pack, and why* is visible without reading a
+  number. Curves break where the log has a hole rather than bridging it.
+  Then the day's facts, its on-battery episodes (when, how long, watt-hours,
+  average draw, SOC start to end, the pack capacity that implies, amber for
+  "by priority" and red for "outage") and its hour-by-hour profile.
+- **Week** and **Month**: a pair of bars per day, solar and house kWh, with
+  the battery's share of the load as an amber inset and the trailing 7-day
+  typical solar as a line -- the panel-cleaning trend. Under it the typical
+  hour of the range: average house and solar by hour, and how much of each
+  hour the pack was carrying. Then the review: totals, medians, best and
+  worst days, when usage peaks, when the sun carries the house, when the
+  pack is typically fullest and lowest, how often it ran on battery and
+  why, and the pack capacity the episodes imply.
+- **Year**: the same review with one bar per month.
+
+The history is **complete since inception**, not a window of days. Each
+finished day's analysis is computed once from its log and cached as
+`logs/days/<date>.json` (keyed on the log's size, so a changed log is
+re-read), which makes a year in review a read of a few hundred small files
+rather than a parse of the JSONL. Days before logging began still appear
+with the inverter's own daily counters. Today is live: its log is read
+incrementally, only the lines appended since the last look, once a minute
+while the window is open, and dropped when it closes.
+
+Left / Right step by the tab's unit, Home returns to today, D W M Y switch
+tabs. Click a day bar to open that day, a month bar to open that month.
+`python history.py --date 2026-09-19 --tab week` opens standalone;
+`--png out.png` renders a frame. Reads `logs/`, never the link.
+
+## Usage insights
+
 ```bash
-python web.py            # http://localhost:8080, and http://<this-pc>:8080 from a phone
+python insights.py                # the last 7 days, and the shape across them
+python insights.py --days 30
+python insights.py --date 2026-09-19
 ```
 
-The vendor app shows you one thing at a time and leads with volts and hertz.
-This shows **every source and every load at once**, on one shared scale, so a
-bar on the left means the same number of watts as a bar on the right:
+The same analysis, drawn, is the history window's week / month / year
+review (above); this is the text form for a terminal, a file (`--out`) or
+anything downstream (`--json`). It reads the logs only and never touches
+the link.
 
-```
-   SOURCES                LOAD NOW               LOADS
-   Solar       0 W          410 W          Household    410 W
-   Grid      410 W         ~~~~~~~         Battery in     0 W
-   Battery     0 W
-```
+Per day: energy (the inverter's counters for solar and load, integrated
+battery in/out and derived grid), when the load peaked, when the sun carried
+the house, when the pack was fullest and lowest, every on-battery episode
+with the watt-hours drawn and the SOC it cost, every grid outage, and an
+hour-by-hour table. Across the run: the hours usage peaks, the hours the
+house is usually on battery, and the pack capacity the episodes imply.
 
-Watts lead everywhere. Volts, hertz, VA and power factor are real but
-secondary, so they live behind one collapsed row instead of competing for
-attention. Below the board: state of charge, battery voltage and current,
-and -- when it is on battery -- how long it has left.
-
-It reads `logs/state.json` and opens no link to the inverter, so it adds zero
-RS-485 traffic and never competes with the collector or the tray. Serve it
-always with `python web.py --autostart on`.
-
-**Where it is worse than the vendor app:** it works on your WiFi only, while
-this PC is running. The app reads the cloud, so it works from anywhere. This
-is a better screen, not a wider one.
+Two things it says out loud rather than hides. The SOC is the inverter's
+voltage estimate, so the implied capacity is indicative; the watt-hours are
+measured. And an on-battery episode with the grid present is the **priority
+setting** at work, not an outage -- on this site the house runs from the pack
+overnight with the grid up, which is where much of the "backup" goes before
+any outage starts.
 
 ## Sharing with the WatchPower app
 
@@ -203,7 +320,7 @@ That is why the default loan is 15 minutes and not 30 seconds.
 ```bash
 python collector.py --autostart on --dongle <dongle-ip>
 python collector.py --quiet --dongle <dongle-ip>   # resident, logs only
-pythonw tray.py                                      # tray, no console
+pythonw tray.py                                    # tray + watch screen
 ```
 
 Autostart writes to `HKCU\...\CurrentVersion\Run` and is rewritten on every
@@ -212,7 +329,7 @@ after the next reboot. Turn it off with `--autostart off`, or untick
 "Start at login" in the tray menu.
 
 Measured idle cost with both resident: ~23 MB each and roughly 0.03 s of CPU
-per minute.
+per minute. The watch screen adds no process -- it is a window in the tray.
 
 ## Cost and contention
 
@@ -225,6 +342,16 @@ Taken from RouterOps, for the same reasons:
   readout yields and shows cached state rather than a stale number.
 - **Cadence is a choice.** 5 s on grid, 1 s once actually on battery, which is
   the only time a second of resolution earns its traffic.
+
+## Is it internet dependent?
+
+No. The dongle, the collector, the tray, the watch screen and the insights
+report are all on the LAN and keep working with the internet down. The one
+thing that reaches out is the clock sync: an SNTP query with a three-second
+timeout per server, tried on connect and every 24 h. With no internet it
+logs "no NTP server answered" and moves on; the logs are stamped from the PC
+clock in that case. The router and WiFi do have to be up -- the dongle is
+reached over them.
 
 ## Cautions
 

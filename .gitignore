@@ -6,6 +6,9 @@ logs/
 # Real site identifiers. See config.py for what the placeholders mean.
 config.local.py
 
+# The owner's running notes for the next session.
+scratchpad.md
+
 __pycache__/
 *.pyc
 *.pyo

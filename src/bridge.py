@@ -18,6 +18,7 @@ for _path in (str(_ROOT), str(_ROOT / "src")):
 
 import clock
 import config
+import energy
 import flow as flowmod
 import link as linkmod
 import netutil
@@ -221,6 +222,48 @@ def snapshot(conn, log=None, qpiri: dict | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------
+# energy counters
+# --------------------------------------------------------------------------
+
+ENERGY_PATH = LOG_DIR / "energy.json"
+
+
+def read_energy_day(conn, day: dt.date, log=None) -> tuple[int | None, int | None]:
+    """The inverter's own PV and load watt-hours for one day: (pv_wh, load_wh).
+
+    Either is None if the read failed or NAKed. A day the inverter has no
+    record of comes back as 0, which is a real answer, not a failure.
+    """
+    out = []
+    for kind in ("pv", "load"):
+        record = read(conn, pi30.energy_command(kind, day), log)
+        data = record.get("data") or {}
+        out.append(data.get("wh") if record.get("ok") and not record.get("nak") else None)
+        time.sleep(config.COMMAND_GAP)
+    return out[0], out[1]
+
+
+def refresh_energy(conn, book: energy.DayBook, today: dt.date, log=None,
+                   history_days: int = 0) -> None:
+    """Pull today's counters, and optionally back-fill the days before.
+
+    History is only fetched for days that have no counter yet, plus
+    yesterday, whose stored value may be from before midnight.
+    """
+    pv, load = read_energy_day(conn, today, log)
+    book.set_counters(today, pv_wh=pv, load_wh=load)
+    for back in range(1, history_days + 1):
+        day = today - dt.timedelta(days=back)
+        rec = book.days.get(day.isoformat()) or {}
+        if back > 1 and rec.get("pv_wh") is not None and rec.get("load_wh") is not None:
+            continue
+        pv, load = read_energy_day(conn, day, log)
+        if pv is None and load is None:
+            break                      # the unit has stopped answering; stop asking
+        book.set_counters(day, pv_wh=pv, load_wh=load)
+
+
+# --------------------------------------------------------------------------
 # clock -- goal #1
 # --------------------------------------------------------------------------
 
@@ -375,7 +418,7 @@ def clock_sync(conn, log=None, announce=print, force: bool = False) -> dict:
 STATE_PATH = LOG_DIR / "state.json"
 
 
-def write_state(snap: dict, source: str = "collector") -> None:
+def write_state(snap: dict, source: str = "collector", today: dict | None = None) -> None:
     """Publish the latest snapshot for other processes to read.
 
     Written to a temp file and renamed, so a reader never sees half a file.
@@ -393,6 +436,7 @@ def write_state(snap: dict, source: str = "collector") -> None:
         "warnings": (snap.get("warnings") or {}).get("active") or [],
         "soc": (snap.get("qpigs") or {}).get("batt_soc"),
         "trust_soc": config.TRUST_SOC,
+        "today": today or {},
     }
     tmp = STATE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

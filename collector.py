@@ -39,6 +39,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 import arbiter
 import bridge
 import config
+import energy
 import flow as flowmod
 import link as linkmod
 
@@ -64,6 +65,32 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
     on_battery_since: float | None = None
     failures = 0
     lent = False
+
+    # The day book: the inverter's own per-day counters plus what we integrate
+    # (battery, grid, time on battery). Persisted every ENERGY_INTERVAL.
+    book = energy.DayBook(bridge.ENERGY_PATH)
+    last_energy = 0.0
+    history_pulled_for: dt.date | None = None
+
+    def failed_cycle(reason: str) -> bool:
+        """Count a failed cycle and, every RELINK_AFTER, re-send the redirect.
+
+        The listener stays up throughout, so a dongle that reconnects on its
+        own is picked up automatically. This is for the case where it does
+        not -- and it did not, for five hours on 2026-09-20, because the
+        original loop only counted a raised LinkError and a dead session
+        fails every read *quietly* inside snapshot().
+        """
+        nonlocal failures
+        failures += 1
+        log({"event": "poll-failed", "error": reason, "run": failures})
+        if relink is not None and failures % RELINK_AFTER == 0:
+            log({"event": "relink", "after_failures": failures})
+            try:
+                relink()
+            except OSError as relink_exc:
+                log({"event": "relink-failed", "error": str(relink_exc)})
+        return idle.wait(interval)
 
     while not idle.stopped:
         # A handover is a loan, not a shutdown: drop the session, give the
@@ -94,22 +121,21 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
 
         try:
             snap = bridge.snapshot(conn, log, qpiri=qpiri)
-            failures = 0
         except linkmod.LinkError as exc:
-            failures += 1
-            log({"event": "poll-failed", "error": str(exc), "run": failures})
-            # The listener stays up throughout, so a dongle that reconnects on
-            # its own is picked up automatically. This is for the case where it
-            # does not: re-send the redirect rather than log failures forever.
-            if relink is not None and failures % RELINK_AFTER == 0:
-                log({"event": "relink", "after_failures": failures})
-                try:
-                    relink()
-                except OSError as relink_exc:
-                    log({"event": "relink-failed", "error": str(relink_exc)})
-            if not idle.wait(interval):
+            if not failed_cycle(str(exc)):
                 break
             continue
+        if not snap["flow"]:
+            # Every core read failed. bridge.read() swallows LinkError into
+            # the record, so this is what a dead session looks like from here.
+            problem = ((snap["records"].get("QPIGS") or {}).get("error")
+                       or "no QPIGS data")
+            if not failed_cycle(problem):
+                break
+            continue
+        if failures:
+            log({"event": "poll-recovered", "after_failures": failures})
+        failures = 0
 
         analysis = snap["flow"]
         if analysis:
@@ -125,14 +151,36 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
                      "duration_s": round(time.time() - on_battery_since)})
                 on_battery_since = None
 
-            bridge.write_state(snap)
+            now = bridge.now_site()
+            book.add_sample(now, time.time(), analysis)
+            if time.time() - last_energy >= config.ENERGY_INTERVAL:
+                # Today's counters every minute; the back-fill once per day,
+                # because it is ~60 reads the first time and 2 after that.
+                pull = (config.ENERGY_HISTORY_DAYS
+                        if history_pulled_for != now.date() else 1)
+                try:
+                    bridge.refresh_energy(conn, book, now.date(), log, pull)
+                    history_pulled_for = now.date()
+                except linkmod.LinkError as exc:
+                    log({"event": "energy-read-failed", "error": str(exc)})
+                last_energy = time.time()
+                book.save()
+            today = book.summary(now.date())
+            today["pv_verdict"] = energy.pv_verdict(
+                today["yesterday_pv_wh"], today["pv_baseline_wh"],
+                config.PV_DROP_WARN_FRACTION)
+
+            bridge.write_state(snap, today=today)
             if panel:
                 print("\n" + flowmod.render(analysis, when=bridge.now_site(),
                                             warnings=snap["warnings"]),
                       flush=True)
 
-        # Periodic clock resync, if it is wanted and permitted.
-        if (config.ALLOW_WRITES and config.CLOCK_RESYNC_HOURS
+        # Periodic clock resync, if it is wanted and permitted. Gated on the
+        # clock's own switch -- it was on ALLOW_WRITES, which is False, so the
+        # "every 24 h" the docs promised never ran.
+        if ((config.ALLOW_CLOCK_WRITES or config.ALLOW_WRITES)
+                and config.CLOCK_RESYNC_HOURS
                 and time.time() - last_clock_sync >= config.CLOCK_RESYNC_HOURS * 3600):
             bridge.clock_sync(conn, log, announce=lambda *a: None)
             last_clock_sync = time.time()
@@ -184,8 +232,10 @@ def main() -> int:
         return 0
 
     # A moved folder would otherwise leave a stale autostart path that starts
-    # nothing, with no symptom until the next reboot.
-    bridge.refresh_autostart(AUTOSTART_VALUE, "collector.py", ["--quiet"])
+    # nothing, with no symptom until the next reboot. The refresh carries the
+    # same arguments --autostart on writes, or it would quietly drop --dongle.
+    extra = ["--quiet"] + (["--dongle", args.dongle] if args.dongle else [])
+    bridge.refresh_autostart(AUTOSTART_VALUE, "collector.py", extra)
 
     log = (bridge.quiet_logger() if (args.panel or args.quiet)
            else bridge.make_logger())

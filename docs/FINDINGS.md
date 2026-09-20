@@ -233,4 +233,128 @@ the serials in its `QID`/`QSID` replies, and the earlier pattern left
 
 ---
 
+## 2026-09-20 -- Energy history answers, a silent five-hour outage, and what the night looks like
+
+### The inverter keeps its own daily counters, and they answer
+
+Probed with the collector stopped, 07:02 local:
+
+```
+QET          02392500   lifetime PV, Wh          QLT          02973100   lifetime load, Wh
+QED20260920  00000000   today (dawn)             QLD20260920  00001773
+QED20260919  00012362   yesterday: 12.36 kWh     QLD20260919  00014864   14.86 kWh
+QEM202609    00234900   September so far         QLM202609    00291300
+QEY2026      02386900                            QLY2026      02964600
+```
+
+All six forms answer. The collector now reads today's pair every minute and
+back-fills 30 days once per session into `logs/energy.json`. The counters
+begin on **2026-09-04** (everything before reads 0), which is presumably the
+commissioning date. Per day since, PV / load in kWh:
+
+| Date | PV | Load | Date | PV | Load |
+|---|---|---|---|---|---|
+| 09-04 | 4.8 | 10.0 | 09-12 | 15.3 | 19.2 |
+| 09-05 | 4.4 | 9.5 | 09-13 | 14.9 | 19.1 |
+| 09-06 | 16.3 | 20.6 | 09-14 | 15.5 | 18.9 |
+| 09-07 | 17.2 | 20.4 | 09-15 | 15.8 | 19.9 |
+| 09-08 | 15.7 | 19.1 | 09-16 | 12.7 | 14.4 |
+| 09-09 | 12.5 | 15.3 | 09-17 | 12.9 | 14.7 |
+| 09-10 | 14.8 | 16.5 | 09-18 | 9.4 | 12.4 |
+| 09-11 | 13.3 | 16.2 | 09-19 | 12.4 | 14.9 |
+
+The last four days run 9-13 kWh against 15-17 kWh the week before. Weather,
+the season, or dust -- the counters cannot say which, but this is the number
+the "clean the panels" indicator is judged on (yesterday against the 7-day
+median, `PV_DROP_WARN_FRACTION` in config).
+
+### The house runs from the battery at night, grid or no grid
+
+State at 02:00 and again at 07:02 local: `QMOD = B`, discharge current 9 A
+then 4 A, **grid present at 242-250 V**, SOC 66% falling to 41% by dawn.
+`QPIRI` reports output source priority **1**. On this firmware that evidently
+behaves as solar-battery-utility: the pack carries the house overnight and the
+grid is only taken when the pack reaches the recharge voltage (46.0 V).
+
+That bears directly on the "half the promised backup" complaint: a real
+outage starts from whatever the night left in the pack, not from full. The
+insights report separates the two kinds of on-battery episode ("by priority"
+vs "outage") so the claim can be argued from the log rather than a feeling.
+Nothing has been changed; it is the owner's setting.
+
+### The link died at 02:00:24 and stayed dead for five hours
+
+A `QPIWS` timeout at 02:00:20, then `disconnect` from the dongle, then
+3,000 failed reads at five-second intervals until the probe above re-sent the
+redirect and the dongle came straight back. The re-link logic never fired:
+`bridge.read()` swallows a dead session into `ok: false` records, so
+`snapshot()` never raised and the failure counter never moved. Fixed -- a
+cycle with no QPIGS data now counts as a failure, and the redirect is re-sent
+every six. `logs/state.json` was also not rewritten during those hours, so
+the tray showed a two-o'clock reading as "stale" instead of nothing.
+
+Also found in the same pass: the 24-hour clock resync was gated on
+`ALLOW_WRITES` (False) instead of `ALLOW_CLOCK_WRITES` (True), so it never
+ran; and the collector's autostart refresh dropped `--dongle` from the Run
+key on every launch. Both fixed.
+
+(Someone clicked **Restore vendor cloud and stop** in the tray at 07:01:52,
+just before the probe; the collector was already dead by then so it changed
+nothing.)
+
+### Dawn: the mode flaps
+
+07:18-07:19 local, 1.4 kW of load, sun just up: `QMOD` alternated B and L
+five times in a minute, 3-6 s in each state, at 51.5-52.5 V. The unit is
+hunting between the pack and the grid while PV is not quite enough. The tray
+raised a balloon on every flip, so balloons are now off
+(`TRAY_NOTIFICATIONS = False`). The `on-battery` verdict itself is unchanged.
+
+### QPIGS field 24 is not solar feed watts
+
+It read `0081` at 02:00 and `0072` at 07:02 with no sun on the array. Whatever
+it is, it is not PV export. Renamed `unknown_24` and logged raw. Fields 22 and
+23 (`0`, `01`) have still never moved.
+
+---
+
+### "On battery" while on solar: the label was wrong, not the inverter
+
+The watch screen said ON BATTERY all morning with 900 W of sun. Audited
+against every logged sample (2,016 across 09-19 and 09-20): 266 samples
+today were `QMOD = B` with PV on the array, the pack **charging** at 7 A from
+the SCC and the grid present at 232 V. That is not a battery-powered house.
+
+`B` is the vendor's "battery mode", and the name is the whole confusion. On
+this family it means the *inverter stage* is making the AC from the DC bus
+-- which PV and the battery both feed -- as opposed to `L`, where the load
+is bypassed straight from the grid. With output priority SBU the unit lives
+in B whenever the sun or the pack can carry the house, so B is the normal
+daytime state, not an alarm. The mode says which stage makes the AC; the
+currents say who is paying for it.
+
+The `on_battery` verdict (B *and* discharge > 0) was already right and the
+energy book's "on battery" time was never inflated -- only the screen's
+mode label (`B -> "ON BATTERY"`) and the tray's "On grid, charging" headline
+were wrong. `flow.analyse` now emits `source` / `source_label` (ON SOLAR,
+SOLAR + BATTERY, ON BATTERY, GRID OUT, ON GRID) and both screens lead with
+that; the inverter box shows the mode as "INVERTER" or "GRID BYPASS" with
+the raw letter under it. The "mode and current disagree" hint no longer
+fires on B-with-sun, which was all day.
+
+### Correction: output source priority is 2 (SBU), not 1
+
+The 09-20 entry above and CLAUDE.md said "output source priority 1".
+`QPIRI` field 17 reads **2** on every session (`... 0 2 3 1 10 ...`):
+Solar-Battery-Utility. Charger priority is 3 (solar only), as recorded. SBU
+is exactly the behaviour observed -- the pack carries the house overnight
+with the grid present -- so nothing else in that entry changes.
+
+### The daily counter lags the day
+
+`QED20260920` read `00000000` on all 72 reads up to 07:53 with 370 Wh
+already integrated from samples. The inverter's per-day counter is
+authoritative for the finished day but is not live, so the screen shows the
+larger of the counter and the integrated figure for "today so far".
+
 ## Next entry goes here

@@ -54,7 +54,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
 import arbiter
 import bridge
+import flow as flowmod
 import config
+import history
+import watch
 
 if sys.platform != "win32":
     raise SystemExit("tray.py is Windows-only.")
@@ -72,7 +75,8 @@ WM_APP_TRAY = 0x8001        # tray icon callbacks land here
 WM_APP_SAMPLE = 0x8002      # poll thread -> UI thread: new reading ready
 
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
-NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
+NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x01, 0x02, 0x04, 0x10
+NIIF_INFO, NIIF_WARNING = 0x01, 0x02
 
 MF_STRING, MF_SEPARATOR, MF_GRAYED, MF_CHECKED = 0x0000, 0x0800, 0x0001, 0x0008
 TPM_RIGHTBUTTON, TPM_RETURNCMD = 0x0002, 0x0100
@@ -165,6 +169,10 @@ user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.RegisterWindowMessageW.restype = wintypes.UINT
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+user32.SetTimer.restype = ctypes.c_size_t
+user32.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+user32.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+WM_TIMER, LIMIT_TIMER = 0x0113, 2
 
 user32.GetDC.restype = wintypes.HDC
 user32.GetDC.argtypes = [wintypes.HWND]
@@ -275,8 +283,14 @@ def _draw_text(px, size, text, colour, alpha, scale, top) -> None:
                     _rect(px, size, x, y, x + scale, y + scale, colour, alpha)
 
 
-def make_icon(colour, fraction, soc=None, size=None) -> int:
+def make_icon(colour, fraction, soc=None, size=None, alert: bool = False) -> int:
     """The state-of-charge number, plus a proportional bar beneath it.
+
+    `alert` is the at-the-limit mark: a small red square in the top-right
+    corner, and nothing else. The digits and the bar stay the battery's
+    own, in their own colour, so the icon keeps its shape and its meaning
+    and only gains a signal. The tray alternates it with the plain icon
+    every half second while a leg is at its limit.
 
     The number is the thing being asked for, so it gets the space: digits fill
     the upper two thirds and the bar is a 2 px strip under them. Both derive
@@ -320,6 +334,9 @@ def make_icon(colour, fraction, soc=None, size=None) -> int:
         if fraction > 0 and filled == 0:
             filled = 1                       # never render a live pack as empty
         _rect(px, size, 0, bar_top, filled, size, colour, FILL_ALPHA)
+    if alert:
+        mark = max(3, round(3 * unit))
+        _rect(px, size, size - mark, 0, size, mark, RED, 255)
 
     bmi = BITMAPINFOHEADER()
     bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -393,6 +410,10 @@ class Reading:
         self.stale = bool(self.state.get("stale")) or not self.state
         self.soc = self.state.get("soc")
         self.trust_soc = bool(self.state.get("trust_soc"))
+        # Legs at their limit -- grid line, home lines, battery -- from the
+        # same rule the watch screen uses.
+        self.at_limit = (flowmod.at_limit(flowmod.leg_stress(self.flow, config))
+                         if self.flow and not self.stale else [])
 
     @property
     def fraction(self):
@@ -430,12 +451,18 @@ class Reading:
             return "No data - is collector.py running?"
         if self.stale:
             return f"Stale - last reading {self.state.get('age_s')}s ago"
+        load = f"{self.flow.get('load_w', 0):.0f} W"
+        source = self.flow.get("source")
         if self.flow.get("on_battery"):
-            return f"ON BATTERY - {self.flow.get('load_w', 0):.0f} W draw"
-        if (self.flow.get("batt_w") or 0) > 20:
-            return f"On grid, charging - {self.flow.get('load_w', 0):.0f} W load"
+            who = "Solar + battery" if source == "solar+battery" else "ON BATTERY"
+            if not self.flow.get("grid_present", True):
+                who = "GRID OUT, on battery"
+            return f"{who} - {load} draw"
+        charging = (self.flow.get("batt_w") or 0) > 20
+        if source == "solar":
+            return f"On solar{', charging' if charging else ''} - {load} load"
         if self.flow.get("grid_present"):
-            return f"On grid - {self.flow.get('load_w', 0):.0f} W load"
+            return f"On grid{', charging' if charging else ''} - {load} load"
         return "No grid"
 
     def tooltip(self) -> str:
@@ -447,9 +474,17 @@ class Reading:
             lines.append(f"Batt {soc_text}{basis}  {self.flow.get('batt_v', 0):.1f} V")
             lines.append(f"Load {self.flow.get('load_w', 0):.0f} W   "
                          f"PV {self.flow.get('pv_w', 0):.0f} W")
+            today = self.state.get("today") or {}
+            if today.get("pv_wh") is not None or today.get("load_wh") is not None:
+                pv_kwh = (today.get("pv_wh") or 0) / 1000
+                load_kwh = (today.get("load_wh") or 0) / 1000
+                lines.append(f"Today {pv_kwh:.1f} kWh solar, {load_kwh:.1f} kWh load")
             runtime = self.flow.get("runtime_h")
             if self.flow.get("on_battery") and runtime:
                 lines.append(f"~{runtime:.1f} h remaining")
+        if self.at_limit:
+            names = {"grid": "grid line", "home": "home lines", "battery": "battery"}
+            lines.append("! " + " and ".join(names[n] for n in self.at_limit) + " at the limit")
         warnings = self.state.get("warnings") or []
         if warnings:
             lines.append("! " + ", ".join(warnings)[:40])
@@ -462,7 +497,7 @@ class Reading:
 # -- the resident process -----------------------------------------------------
 
 ID_REFRESH, ID_LOGS, ID_SYNC, ID_RESTORE, ID_AUTOSTART, ID_EXIT = range(1, 7)
-ID_HANDOVER, ID_TAKEBACK = 7, 8
+ID_HANDOVER, ID_TAKEBACK, ID_WATCH, ID_HISTORY = 7, 8, 9, 11
 
 # How long the Android app gets the dongle for when you ask. It reads the
 # vendor cloud rather than the inverter, so it needs a couple of minutes of
@@ -573,6 +608,12 @@ class TrayWindow:
         self._log = log
         self._icon = None
         self._added = False
+        self._watch = watch.WatchWindow()
+        self._history = history.HistoryWindow()
+        self._watch.on_history = self._history.open
+        self._was_on_battery = None
+        self._limit_blinking = False     # the at-the-limit timer is running
+        self._limit_phase = True         # which half of the blink we are in
 
         # Held as an attribute because ctypes does not keep the trampoline
         # alive on its own -- let it be collected and the first message into
@@ -620,18 +661,63 @@ class TrayWindow:
 
     def _apply(self) -> None:
         reading = self._monitor.snapshot()
-        icon = make_icon(reading.colour, reading.fraction, reading.soc)
+        self._limit_timer(bool(reading.at_limit))
+        icon = make_icon(reading.colour, reading.fraction, reading.soc,
+                         alert=bool(reading.at_limit) and self._limit_phase)
         nid = self._nid(NIF_MESSAGE | NIF_ICON | NIF_TIP)
         nid.hIcon = icon
         nid.szTip = reading.tooltip()
         ok = shell32.Shell_NotifyIconW(NIM_MODIFY if self._added else NIM_ADD,
                                        ctypes.byref(nid))
         self._added = bool(ok) or self._added
+        # The watch window wears the same glyph on its title bar. Set it there
+        # before the old handle goes, for the same reason as below.
+        self._watch.set_icon(icon)
+        self._history.set_icon(icon)
         # Replace first, then destroy the old one -- never the other way round,
         # and never skipped: one leaked HICON per sample is a handle leak.
         old, self._icon = self._icon, icon
         if old:
             user32.DestroyIcon(old)
+
+    def _notify(self, title: str, text: str, warning: bool = False) -> None:
+        """A native balloon. Windows already provides this; no toast library."""
+        if not self._added:
+            return
+        nid = self._nid(NIF_INFO)
+        nid.szInfoTitle = title[:63]
+        nid.szInfo = text[:255]
+        nid.dwInfoFlags = NIIF_WARNING if warning else NIIF_INFO
+        shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid))
+
+    def _announce_transition(self) -> None:
+        """Tell the user the moment the grid goes, and when it returns.
+
+        Off by default (config.TRAY_NOTIFICATIONS): the inverter flaps between
+        line and battery mode every few seconds around dawn, and each flip was
+        a balloon. Kept for a site where a flip really is an outage.
+        """
+        if not config.TRAY_NOTIFICATIONS:
+            return
+        reading = self._monitor.snapshot()
+        if not reading.flow or reading.stale:
+            return
+        now_on_battery = bool(reading.flow.get("on_battery"))
+        if self._was_on_battery is None:
+            self._was_on_battery = now_on_battery
+            return
+        if now_on_battery == self._was_on_battery:
+            return
+        self._was_on_battery = now_on_battery
+        if now_on_battery:
+            detail = f"Drawing {reading.flow.get('load_w', 0):.0f} W from the pack"
+            runtime = reading.flow.get("runtime_h")
+            if runtime:
+                detail += f", about {runtime:.1f} h left"
+            self._notify("Grid lost - on battery", detail, warning=True)
+        else:
+            self._notify("Grid back",
+                         f"On utility again, {reading.flow.get('load_w', 0):.0f} W load")
 
     def _remove_icon(self) -> None:
         if self._added:
@@ -657,6 +743,8 @@ class TrayWindow:
                                f"   {soc} at {volts:.2f} V{basis}"[:52])
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
 
+        user32.AppendMenuW(menu, MF_STRING, ID_WATCH, "Open watch screen")
+        user32.AppendMenuW(menu, MF_STRING, ID_HISTORY, "Power history")
         user32.AppendMenuW(menu, MF_STRING, ID_REFRESH, "Refresh now")
         user32.AppendMenuW(menu, MF_STRING, ID_LOGS, "Open logs folder")
 
@@ -693,7 +781,11 @@ class TrayWindow:
             self._on_command(choice)
 
     def _on_command(self, ident: int) -> None:
-        if ident == ID_REFRESH:
+        if ident == ID_WATCH:
+            self._watch.open()
+        elif ident == ID_HISTORY:
+            self._history.open()
+        elif ident == ID_REFRESH:
             self._monitor.wake()
         elif ident == ID_LOGS:
             bridge.LOG_DIR.mkdir(exist_ok=True)
@@ -725,17 +817,36 @@ class TrayWindow:
 
     # -- messages ---------------------------------------------------------
 
+    def _limit_timer(self, wanted: bool) -> None:
+        """A 500 ms timer that exists only while a leg is at its limit. It
+        alternates the icon between plain and marked; a calm tray has no
+        timer at all."""
+        if wanted and not self._limit_blinking:
+            self._limit_blinking = bool(user32.SetTimer(self._hwnd, LIMIT_TIMER, 500, None))
+        elif not wanted and self._limit_blinking:
+            user32.KillTimer(self._hwnd, LIMIT_TIMER)
+            self._limit_blinking, self._limit_phase = False, True
+
     def _on_message(self, hwnd, msg, wparam, lparam):
+        if msg == WM_TIMER and wparam == LIMIT_TIMER:
+            self._limit_phase = not self._limit_phase
+            self._apply()
+            return 0
         if msg == self._taskbar_created:
             self._added = False
             self._apply()
             return 0
         if msg == WM_APP_TRAY:
-            if lparam in (WM_RBUTTONUP, WM_LBUTTONUP):
+            if lparam == WM_LBUTTONUP:
+                self._watch.open()
+            elif lparam == WM_RBUTTONUP:
                 self._show_menu()
             return 0
         if msg == WM_APP_SAMPLE:
             self._apply()
+            self._watch.refresh()
+            self._history.refresh()
+            self._announce_transition()
             return 0
         if msg == WM_COMMAND:
             self._on_command(wparam & 0xFFFF)
@@ -789,6 +900,8 @@ def main() -> int:
     args = parser.parse_args()
 
     mode = "direct" if args.direct else ("redirect" if args.redirect else "follow")
+    # Before any window or icon exists, or Windows stretches both.
+    watch.set_dpi_aware()
     log = bridge.quiet_logger()
     refresh_autostart_path()
     TrayWindow(mode, args.direct, log).run()

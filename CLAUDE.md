@@ -6,6 +6,13 @@ inverter over WiFi, bypassing the WatchPower vendor cloud.
 Read `README.md` for the how, `docs/PI30-COMMANDS.md` for the command set,
 `docs/FINDINGS.md` for the site baseline and what the hardware settled.
 
+## Where it lives
+
+`D:\PowerTools\phantom-bridge` -- moved here from the Desktop on 2026-09-20,
+because it is a machine tool. Like RouterOps it is **its own git repo**
+(`github.com/TechNerdXp/phantom-bridge`) nested inside the PowerTools tree
+and ignored by the parent repo. Commit here, not at `D:\PowerTools`.
+
 **This is no longer a spike.** First contact was 2026-09-19 and it worked:
 the link, the framing, the telemetry and the clock write are all confirmed
 against the unit. What follows is measured unless it says otherwise.
@@ -22,6 +29,19 @@ against the unit. What follows is measured unless it says otherwise.
 - Charger source priority is **3 (Solar only)** with max utility charge
   current **2 A** — the pack is configured to charge from PV essentially
   alone. Worth knowing before touching anything charge-related.
+- Output source priority is **2, SBU** (Solar-Battery-Utility; `QPIRI`
+  field 17 -- an earlier note said 1, wrong), so the house runs from the
+  battery overnight **with the grid present** (seen 2026-09-20: mode B, 9 A
+  discharge, 242 V on the input). A real outage therefore starts from a
+  part-drained pack. Not changed; it is the owner's setting.
+- **`QMOD = B` is inverter mode, not "on battery".** The unit sits in B all
+  day on solar with the pack charging (266 samples on 2026-09-20). B means the
+  inverter stage makes the AC from the DC bus; L means grid bypass. Who is
+  actually carrying the house is `flow.source` (solar / solar+battery /
+  battery / grid), and that is what every screen must lead with. Never map
+  the letter to a verdict again.
+- The per-day energy counters `QED`/`QLD` (and month/year forms) answer and
+  start on 2026-09-04. They are the source for "today" and the panel trend.
 
 ## The approach
 
@@ -46,11 +66,11 @@ rule (dialect `tail`, auto-confirmed from the first CRC-valid reply);
 `set>server=` redirect and `set>server=default;` restore; the whole read
 catalogue below; and `DAT` clock setting, verified by `QT` readback.
 
-**Still assumed:** the three extra `QPIGS` tail fields are mapped as the
-grid-feed extension (`solar_feed_to_grid`, `country_code`, `solar_feed_w`) —
-plausible names, but none has been made to move. The FC=1 heartbeat payload
-shape is **untested and moot**: across six sessions this dongle sent no
-heartbeats at all.
+**Still assumed:** the first two extra `QPIGS` tail fields are mapped as the
+grid-feed extension (`solar_feed_to_grid`, `country_code`) and have never
+moved. The third is **not** solar feed (it reads 70-80 in the dark) and is
+carried as `unknown_24`. The FC=1 heartbeat payload shape is **untested and
+moot**: across six sessions this dongle sent no heartbeats at all.
 
 If hardware contradicts this file, hardware wins — update the file.
 
@@ -65,6 +85,11 @@ Everything the original gate asked for is done.
 - [x] `QPIRI` + `QPGS*` settled the chassis question — **one chassis**
 - [x] `DAT` accepted **and confirmed to move the clock** (the repo expected
       this to fail; it does not on this firmware)
+- [x] Daily energy counters read every minute, 30 days back-filled per
+      session, into `logs/energy.json`
+- [x] The link recovers on its own: a cycle with no data counts as a failure
+      and the redirect is re-sent every six (it did not, for five hours, on
+      2026-09-20 -- see FINDINGS)
 
 Not done, deliberately: no power-behaviour write has ever been sent.
 
@@ -80,12 +105,71 @@ Not done, deliberately: no power-behaviour write has ever been sent.
 3. **All the controls.** The full PI30 setter catalogue is in `src/pi30.py`
    and exposed via `ctl.py set`, behind `ALLOW_WRITES`.
 4. **Battery readout in the tray.** `tray.py`, stdlib ctypes Win32.
-5. **A watch screen worth replacing the app with.** `web.py` serves
-   `web/index.html` on the LAN: every source and every load at once on one
-   shared scale, watts leading, volts and hertz demoted behind a fold. It is
-   web rather than a native window for one reason -- the vendor app lives on
-   a phone, and a LAN page is the only thing that reaches it. It is LAN-only
-   and needs this PC up, which the cloud app is not; that is the trade.
+5. **A watch screen worth replacing the app with.** `watch.py`: a native
+   window opened from the tray -- the four pillars (solar, grid, home,
+   battery) around the inverter, an arrow per leg whose direction is the
+   current and whose thickness is the watts on one shared scale, watts big
+   at every pillar, the secondary numbers small in a monospace face, a liquid
+   tank SOC gauge that shows the empty part too, and one line of status.
+   The day's figures and the cable bar were under the board and were
+   **removed on request (2026-09-20)**: they live in the history window,
+   and the arrows carry the limits. Keep this view to the four dimensions.
+   The header is the source verdict, never the raw mode.
+   Every arrow is coloured by its own limit -- grid and home against the
+   7/29 (`GRID_LINE_RATING_A`, `LOAD_LINE_RATING_A`), battery against the
+   pack (`BATTERY_CONTINUOUS_A` amber, `BATTERY_MAX_A` red) -- and blinks
+   at the limit on a 500 ms timer that exists only while a leg is at it.
+   The home leg is the sum of both output lines against one line's rating
+   because the split is unknown: red means "one line could be at its
+   limit", not "both are". The rule lives in `flow.leg_stress` and the tray
+   icon uses the same one: a red corner mark only, alternating with the
+   plain icon on its own 500 ms timer; digits and bar stay the battery's. GDI+ draws the shapes anti-aliased
+   and plain GDI takes over if gdiplus is missing. `--png` renders a frame
+   to a file: look at it before and after touching the layout. A LAN web
+   dashboard was built and then **removed** on request -- a browser tab costs
+   100-300 MB to render 800 bytes of JSON, and the window repaints only on a
+   new sample and costs nothing while closed. Do not reintroduce a web view
+   without being asked. No balloon notifications either: the grid-lost balloon
+   was removed on request (mode flaps around dawn), and `TRAY_NOTIFICATIONS`
+   stays False.
+
+   Backward compatibility is a requirement here: `GetDpiForSystem` and
+   `SetProcessDpiAwarenessContext` are Windows 10 1607/1703+, so they are
+   looked up lazily inside try/except and fall back to `GetDeviceCaps`.
+   Never resolve a version-gated export at module import -- a missing one
+   raises AttributeError and takes the whole tray down on an older machine.
+6. **Usage insights.** `insights.py` reads the logs (never the link) and
+   reports per day: energy, peaks, sun hours, battery fullest/lowest, every
+   on-battery episode with Wh drawn and SOC cost, marked "by priority" or
+   "outage", and an hourly table; across the run, the peak hours and the
+   pack capacity the episodes imply. This is the evidence base for the
+   battery-backup question and for choosing SBU/USB -- see Oracle #29.
+   **Drawn, not only tabled:** `history.py` is the same analysis as a
+   native window (tray menu "Power history", or click the day strip on the
+   watch screen) with four tabs. DAY: curves -- solar area, house, derived
+   grid, SOC on a right axis, a battery strip charging up / discharging
+   down, every on-battery episode shaded amber and every outage red -- then
+   the facts, the episodes and the hour-by-hour profile. WEEK / MONTH /
+   YEAR: solar/house bars per day (per month for the year) with the battery
+   share and the 7-day typical line, the typical hour of the range, and the
+   review: totals, medians, best/worst days, usage peaks, sun window, when
+   the pack is fullest and lowest, episodes by priority vs outage, implied
+   pack capacity. **Complete since inception:** every finished day's
+   analysis is computed once and cached as `logs/days/<date>.json` (keyed
+   on the log's size), so a year is a read of small files, not a parse of
+   the JSONL; days before logging began show the inverter's counters.
+   Today is live, read incrementally once a minute while open and dropped
+   on close. Keys: Left/Right step by the tab's unit, Home, D W M Y; click
+   a bar to open that day or month. Subclasses `WatchWindow`.
+7. **Daily production.** From the inverter's own `QED` counter, shown on the
+   watch screen with yesterday against the 7-day median; a drop past
+   `PV_DROP_WARN_FRACTION` says "check the panels".
+
+What the inverter cannot give: a per-line load. It reports one combined
+output and carries **no per-line figure at all** -- there is nothing to tell
+apart, so the owner's Tuya meters on each line cannot help label it. The
+cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
+2026-09-20: no Tuya integration; the meters stay the owner's own readout.
 
 ## Layout
 
@@ -96,12 +180,15 @@ Not done, deliberately: no power-behaviour write has ever been sent.
 | `collector.py` | The resident poller. Redirect, poll, log JSONL, publish `logs/state.json`. |
 | `ctl.py` | One-shot CLI: reads, writes, clock, discovery sweep, restore. |
 | `tray.py` | Windows notification-area battery readout. |
-| `web.py` + `web/` | The watch screen: a LAN dashboard reading `state.json`. |
+| `watch.py` | The watch screen: a GDI/GDI+ window hosted by the tray process. `--png` for a frame. |
+| `insights.py` | Usage report from the logs. Opens no link. |
+| `history.py` | The power history window: day / week / month / year tabs. A day as curves; a range as bars, the typical hour and the review. Past days cached under `logs/days/`; today read incrementally. `--png` for a frame. |
 | `src/frames.py` | CRC, escaping, Eybond framing, dialect detection. Doctested. |
 | `src/pi30.py` | Command catalogue + response decoders. Doctested. |
 | `src/link.py` | Transport: server/direct/dry-run links, sessions, correlation. |
 | `src/bridge.py` | Shared connect/log/poll/clock-sync used by both entry points. |
 | `src/flow.py` | Power-flow derivation and the ASCII panel. |
+| `src/energy.py` | The day book: inverter counters plus integrated battery/grid Wh. Doctested. |
 | `src/clock.py` | SNTP client and clock encoding. Doctested. |
 | `src/arbiter.py` | Named-mutex link arbitration and the no-spin idle wait. |
 | `src/netutil.py` | LAN address / broadcast / firewall helpers. |
@@ -162,6 +249,9 @@ Both entry points are resident services, started at login from
 `PhantomBridgeTray`), written by `bridge.set_autostart()` and refreshed on
 every launch so a moved folder self-heals. Measured idle cost: ~23 MB and
 ~0.03 s CPU per minute each.
+
+Internet is not needed for any of it. Only the clock sync reaches out (SNTP,
+3 s timeout per server) and it degrades to a logged miss.
 
 ## Safety
 

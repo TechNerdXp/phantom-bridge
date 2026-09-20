@@ -129,6 +129,69 @@ GRID_PRESENT_VOLTS = 80.0
 
 
 # --------------------------------------------------------------------------
+# Load side
+# --------------------------------------------------------------------------
+
+# The output is wired in 7/29 (7 strands of 0.029", ~3 mm^2 copper), which is
+# good for roughly 25 A continuous in PVC. At 220 V that is ~5.5 kW -- the
+# cable tops out before the 6 kVA inverter does, which is why the watch
+# screen shows output current against THIS number and not just load%.
+#
+# The inverter reports one combined output; it cannot tell two lines apart.
+# If the output is split over two cables downstream, this is the per-line
+# rating and the reading is the sum -- a per-line figure needs a clamp or a
+# metering breaker on each line.
+LOAD_LINE_RATING_A = 25.0
+LOAD_LINE_WARN_FRACTION = 0.8        # amber from here, red at the rating
+
+# The grid input is a 7/29 too. The grid leg is derived (load + charge -
+# solar - discharge), so its amps are derived as well: watts / grid volts.
+GRID_LINE_RATING_A = 25.0
+
+# What the pack allows, in amps at the 48 V bus, for the battery arrow.
+# Amber from the continuous figure, red (and blinking) at the maximum. The
+# same numbers apply to charging, which the inverter itself caps at
+# QPIRI max_charge_a (90 A here) so it will always sit under the maximum.
+BATTERY_CONTINUOUS_A = 50.0
+BATTERY_MAX_A = 100.0
+
+# Every leg's arrow takes its colour from how close it is to its limit --
+# grid and home against the 7/29, battery against the pack -- and blinks
+# at the limit. The home leg is the SUM of the two output lines against ONE
+# line's rating, because the inverter cannot say how the load is split:
+# red there means "at least one line could be at its limit", not "both are".
+
+
+# --------------------------------------------------------------------------
+# Tray
+# --------------------------------------------------------------------------
+
+# Balloon on grid-lost / grid-back. Off: around dawn this unit flips between
+# line and battery mode every few seconds while the sun is not quite enough
+# (2026-09-20, 07:18: five flips in a minute), and each flip was a balloon.
+TRAY_NOTIFICATIONS = False
+
+
+# --------------------------------------------------------------------------
+# Energy counters
+# --------------------------------------------------------------------------
+
+# The inverter keeps per-day PV and load watt-hour counters (QED/QLD, confirmed
+# 2026-09-20). Read today's this often; they only move by the watt-hour, so
+# every cycle would be waste.
+ENERGY_INTERVAL = 60
+
+# How far back to pull daily history on each new session. This is what the
+# "yesterday vs typical" solar verdict is judged against.
+ENERGY_HISTORY_DAYS = 30
+
+# Yesterday's PV below this fraction of the 7-day median is called out on the
+# watch screen: dust, shade, or a string down. 0.7 is a big enough drop to be
+# real rather than weather; tune it once a season of data is in.
+PV_DROP_WARN_FRACTION = 0.7
+
+
+# --------------------------------------------------------------------------
 # Safety
 # --------------------------------------------------------------------------
 
