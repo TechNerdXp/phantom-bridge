@@ -81,15 +81,25 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
         original loop only counted a raised LinkError and a dead session
         fails every read *quietly* inside snapshot().
         """
-        nonlocal failures
+        nonlocal failures, dongle
         failures += 1
         log({"event": "poll-failed", "error": reason, "run": failures})
         if relink is not None and failures % RELINK_AFTER == 0:
-            log({"event": "relink", "after_failures": failures})
+            log({"event": "relink", "after_failures": failures,
+                 "dongle": dongle})
             try:
-                relink()
+                answered = relink(dongle)
             except OSError as relink_exc:
                 log({"event": "relink-failed", "error": str(relink_exc)})
+            else:
+                # The redirect also goes out by broadcast, so a dongle that
+                # moved to a new DHCP address still answers -- from there.
+                # Remember it: the next unicast, and the restore at
+                # handover or exit, should go to where it is now.
+                if answered and dongle not in answered:
+                    log({"event": "dongle-moved", "from": dongle,
+                         "to": answered[0]})
+                    dongle = answered[0]
         return idle.wait(interval)
 
     while not idle.stopped:
@@ -113,7 +123,7 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
             log({"event": "handover-end"})
             bridge.cancel_handover()
             if relink is not None:
-                relink()
+                relink(dongle)
             if hasattr(conn, "wait_for_session"):
                 conn.wait_for_session(120)
             lent = False
@@ -262,13 +272,20 @@ def main() -> int:
 
         relink = None
         if not args.direct and not args.no_redirect:
-            relink = lambda: bridge.send_redirect(args.dongle,
-                                                  announce=lambda *a: None)
+            relink = lambda ip: bridge.send_redirect(ip,
+                                                     announce=lambda *a: None)
+
+        # Once connected, the session's peer is where the dongle actually is;
+        # --dongle and config.DONGLE_IP are only the first guess.
+        session = getattr(conn, "session", None)
+        dongle_ip = getattr(session, "peer", None) or args.dongle
+        if args.dongle and dongle_ip != args.dongle:
+            log({"event": "dongle-moved", "from": args.dongle, "to": dongle_ip})
 
         worker = threading.Thread(
             target=poll_forever, args=(conn, log, idle),
             kwargs={"panel": args.panel, "interval": args.interval,
-                    "relink": relink, "dongle": args.dongle},
+                    "relink": relink, "dongle": dongle_ip},
             daemon=True)
         worker.start()
 

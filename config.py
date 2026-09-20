@@ -23,7 +23,10 @@ DONGLE_PN = "W00344XXXXXXXX"
 DONGLE_FW = "3.6.6.6"
 
 # None = discover by broadcast. Set the real address in config.local.py:
-# unicast is faster and more reliable than the sweep.
+# unicast is faster and more reliable than the sweep. It is a first guess,
+# not a promise: every `set>` goes to this address *and* by broadcast, and
+# the collector follows the dongle if DHCP moves it. A DHCP reservation on
+# the router it hangs off is the only thing that makes this address stable.
 DONGLE_IP = None
 
 # UDP channel that accepts `set>...;` config strings.

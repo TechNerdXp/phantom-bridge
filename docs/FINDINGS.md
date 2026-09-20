@@ -378,4 +378,37 @@ mutex still refuses a second collector (exit 1, no crash), and the exe finds
 the checkout's `config.local.py` and `logs/` from `dist\` two levels down.
 Idle cost after the switch: 25 MB collector, 30 MB tray -- what pythonw cost.
 
+### 2026-09-20 -- the dongle moved house and the redirect went to a stranger
+
+The collector had survived main-router restarts and the PC sleeping and
+waking all day. At 21:24 the router the dongle hangs off was restarted and
+the link died for good: `QMOD: no reply within 6s`, then `disconnect` from
+`<dongle-ip>`, then 277 failed cycles with a `relink` every sixth -- 46
+re-sent redirects over 28 minutes, none of them answered by a connection.
+
+The redirect was going to the wrong box. That router is the DHCP server;
+its restart emptied the lease table, the dongle came back on a **different
+address** (.104 -> .102) and another device took the old one. `udp_config`
+sent unicast only whenever an IP was known -- the broadcast fan-out was the
+*fallback for no IP*, so with `--dongle` on the command line (and
+`DONGLE_IP` in `config.local.py`) the relink never left unicast. A
+`set>server=?;` by broadcast found the dongle at once (`rsp>server=1;` from
+.102), a hand-sent redirect to .102 brought it into the still-listening
+collector in 5 s, and the poll recovered after 277 failures. A restart
+would not have helped: the Run key carries the stale `--dongle` and
+`open_link` unicast the same way.
+
+Why the other restarts did not bite: the main router is not the dongle's
+DHCP server, and a sleeping PC changes nothing on the dongle's side -- it
+just reconnects to the same address when the listener is back.
+
+Changed: every `set>` (redirect, relink, restore) now goes to the known IP
+**and** every broadcast address. `send_redirect` returns who answered, the
+collector logs `dongle-moved` and follows the new address for the next
+unicast and the exit/handover restore, and on connect it takes the
+session's peer as the truth over `--dongle`. One dongle on this LAN, so a
+broadcast `set>server=` has exactly one listener; a multi-dongle site would
+need to think again. The real fix is on the router: a DHCP reservation for
+the dongle's MAC. Not done yet.
+
 ## Next entry goes here

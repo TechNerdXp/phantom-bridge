@@ -25,6 +25,12 @@ against the unit. What follows is measured unless it says otherwise.
 - Serial `<inverter-serial>`, firmware `VERFW:00060.10`, protocol `PI30`.
 - Wi-Fi module PN `W00344XXXXXXXX`, firmware `3.6.6.6`, at **`<dongle-ip>`**.
   Eybond/Shinemonitor-family collector (SoftAP SSID = PN, pw `12345678`).
+  That address is a **DHCP lease, not a fact**: it moved once (2026-09-20,
+  when the router it hangs off was restarted) and the collector lost the
+  link for 28 minutes because it re-sent the redirect to the old address
+  only. Every `set>` now goes unicast *and* broadcast, and the collector
+  follows the dongle (`dongle-moved` in the log). A DHCP reservation on
+  that router is the durable fix and has not been made.
 - Site is in Asia/Karachi (UTC+5).
 - Charger source priority is **3 (Solar only)** with max utility charge
   current **2 A** — the pack is configured to charge from PV essentially
@@ -88,8 +94,9 @@ Everything the original gate asked for is done.
 - [x] Daily energy counters read every minute, 30 days back-filled per
       session, into `logs/energy.json`
 - [x] The link recovers on its own: a cycle with no data counts as a failure
-      and the redirect is re-sent every six (it did not, for five hours, on
-      2026-09-20 -- see FINDINGS)
+      and the redirect is re-sent every six, by unicast and broadcast (it
+      did not, for five hours and then for 28 minutes, on 2026-09-20 -- see
+      FINDINGS)
 
 Not done, deliberately: no power-behaviour write has ever been sent.
 

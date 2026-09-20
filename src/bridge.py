@@ -159,19 +159,23 @@ def open_link(*, direct: str | None = None, dongle: str | None = None,
     return server
 
 
-def send_redirect(dongle: str | None = None, announce=print) -> None:
+def send_redirect(dongle: str | None = None, announce=print) -> list[str]:
     """Re-send the `set>server=` string without rebuilding the listener.
 
     Used to recover a resident collector: if the dongle has gone quiet for a
     while it may have lost the setting (or been power-cycled), and re-sending
     is cheap next to sitting there logging failures forever.
+
+    Returns the addresses that answered `rsp>server=`, so the caller can
+    notice the dongle has moved (DHCP) and stop unicasting to the old one.
     """
     host = local_ip()
-    linkmod.udp_config(f"set>server={host}:{config.LOCAL_PORT};",
-                       dongle or config.DONGLE_IP,
-                       config.UDP_CONFIG_PORT,
-                       netutil.broadcast_addresses(config.LAN_CIDR_BITS),
-                       log=announce)
+    replies = linkmod.udp_config(f"set>server={host}:{config.LOCAL_PORT};",
+                                 dongle or config.DONGLE_IP,
+                                 config.UDP_CONFIG_PORT,
+                                 netutil.broadcast_addresses(config.LAN_CIDR_BITS),
+                                 log=announce)
+    return [addr for addr, data in replies if data.startswith(b"rsp>server")]
 
 
 def restore(dongle: str | None = None, announce=print) -> None:

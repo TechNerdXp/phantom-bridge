@@ -38,10 +38,16 @@ def udp_config(command: str, target: str | None, port: int,
                broadcasts, timeout: float = 3.0, log=print) -> list[tuple[str, bytes]]:
     """Send one `set>...;` string to the dongle. This MUTATES dongle config.
 
-    With no known IP we fan out over every plausible broadcast address rather
-    than trusting 255.255.255.255 to leave by the right interface.
+    The known IP goes first, then every plausible broadcast address -- always,
+    not only when the IP is unknown. The dongle is a DHCP client: when the
+    router it hangs off restarts, it can come back on a different address
+    while another device takes the old one (2026-09-20: .104 -> .102, and
+    the collector then re-sent the redirect to a stranger for 28 minutes).
+    Broadcast is what still reaches it. There is one Eybond dongle on this
+    LAN; on a site with several, a broadcast `set>server=` moves them all.
     """
-    targets = [target] if target else list(broadcasts)
+    targets = [target] if target else []
+    targets += [b for b in broadcasts if b not in targets]
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(timeout)
