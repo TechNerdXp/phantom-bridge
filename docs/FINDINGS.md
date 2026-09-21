@@ -445,8 +445,19 @@ around midnight. The pack figure is SOC-scale, from the episodes, and the
 SOC is voltage-derived: the number is consistent with the floor and the
 release, which are measured in SOC points, not with the nameplate.
 
-Not yet done: the timer is still set on the inverter, and `AUTO_PRIORITY`
-is off. No POP has been sent. The first write happens after the timer is
-cleared and the switch is flipped in `config.local.py`.
+**Switched on the same night, 03:18.** `AUTO_PRIORITY = True` in
+`config.local.py`, collector restarted. The first power-behaviour write
+this project has ever sent, and it was proven:
+
+```
+03:18:39  before SBU   sent POP01   reply ACK   after SUB   (QPIRI readback)
+03:19:34  QMOD L, source grid, 316 W derived grid, 0 A discharge, SOC 40
+```
+
+The house moved to the grid within the minute; the pack (40 %) is held
+for a release around 06:10. The menu-99 timer is still set on the panel,
+so until it is cleared the two may disagree at the timer's own switch
+times; the collector re-reads QPIRI every five minutes and re-asserts,
+and each such flip is logged as `priority-external-change`.
 
 ## Next entry goes here
