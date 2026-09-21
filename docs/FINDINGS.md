@@ -460,4 +460,31 @@ so until it is cleared the two may disagree at the timer's own switch
 times; the collector re-reads QPIRI every five minutes and re-asserts,
 and each such flip is logged as `priority-external-change`.
 
+### 2026-09-22 -- the beep at 03:18, and two silent writes at 03:41
+
+The 03:18 `POP01` was followed by one long beep, the kind the owner
+knows as the source-interrupt alarm; the timer's own switches (SUB at
+5 pm, SBU at 02:00) never beep. Tested at 03:41: `POP02` by hand (line
+to inverter, ACK, QPIRI read back SBU) and `POP01` by the collector
+twenty seconds later (inverter to line, ACK, QPIRI read back SUB). **Both
+silent.** So it is not the parameter write, and not the transfer
+direction.
+
+On the bus the 03:18 and 03:42 transfers are identical: QMOD B -> L, grid
+steady at 217 V / 50.2 Hz, no QPIWS bit, no `on-battery` disagreement.
+The one difference is how long the unit had been in inverter mode before
+going back to line: **78 minutes** at 03:18 (since the timer's 02:00
+release) against **13 seconds** at 03:42. Working theory: flag `y`
+(`alarm_on_primary_source_interrupt`, enabled) sounds on a return to line
+after a sustained spell on the pack. The next real switch of that kind
+is tomorrow's dusk (`SBU -> SUB` after a day on solar); if it beeps, the
+targeted fix is one flag write, `PDy`, and the buzzer stays on for
+overload and low battery. Not done: no flag has been written.
+
+`ctl.py set` turned out to have been broken since the first commit
+(`precheck_set` called, never defined); fixed today. It cannot open a
+link while the collector holds it -- the dongle keeps one session and
+the collector's listener has the port -- so a hand write means stopping
+the collector, writing, and starting it again.
+
 ## Next entry goes here
