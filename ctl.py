@@ -208,6 +208,39 @@ def cmd_controls(args, conn, log) -> int:
     return 0
 
 
+def precheck_set(args) -> int | None:
+    """Every refusal `set` can make, before any link is opened.
+
+    Returns an exit code to stop with, or None to go ahead and connect.
+    cmd_set repeats the same checks; this copy exists so that a refusal
+    never costs a redirect that silences WatchPower.
+    """
+    setter = pi30.SETTERS.get(args.control)
+    if setter is None:
+        print(f"No such control: {args.control}\nRun:  python ctl.py controls")
+        return 2
+    try:
+        pi30.build_write(args.control, args.value, unit=args.unit)
+    except (ValueError, KeyError) as exc:
+        print(f"{exc}")
+        return 2
+    if not config.ALLOW_WRITES:
+        print("REFUSED: ALLOW_WRITES is False in config.py (set it in config.local.py).")
+        return 1
+    if setter.risk == "high" and not args.i_mean_it:
+        print("REFUSED: this wipes every setting on the unit. Add --i-mean-it.")
+        return 1
+    if (setter.risk == "parallel" and config.PARALLEL_CONFIRMED is not False
+            and not (args.all_units or args.unit is not None)):
+        print("REFUSED: parallel-sensitive setting on an unsettled stack. "
+              "Add --unit or --all-units.")
+        return 1
+    if not args.yes:
+        print("Not sent. Add --yes to actually write it.")
+        return 1
+    return None
+
+
 def cmd_set(args, conn, log) -> int:
     key = args.control
     setter = pi30.SETTERS.get(key)
