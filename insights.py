@@ -261,6 +261,7 @@ def analyse_day(day: dt.date, samples: list[dict], counters: dict | None) -> dic
             "start": _hm(e["start"]), "end": _hm(e["end"]),
             "duration_s": round(e["duration_s"]), "kind": e["kind"],
             "wh": round(e["wh"]), "avg_w": round(e["avg_w"]), "peak_w": e["peak_w"],
+            "load_wh": round(e["load_wh"]),
             "soc_start": e["soc_start"], "soc_end": e["soc_end"],
             "soc_drop": e["soc_drop"], "v_start": e["v_start"], "v_end": e["v_end"],
             "implied_pack_wh": e["implied_pack_wh"], "open": e.get("open", False),

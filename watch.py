@@ -54,6 +54,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 import bridge
 import config
 import flow as flowmod
+import policy
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -966,6 +967,18 @@ class WatchWindow:
         elif source == "battery" and not flow.get("grid_present", True):
             self._text(hdc, f"GRID OUT - {_watts(load)} from the pack",
                        pad, sy, width - pad * 2 - 90, 18, WARN, 11, 700)
+        elif policy.headline(state.get("policy")):
+            plan = state["policy"]
+            line = policy.headline(plan)
+            if plan.get("phase") == "hold" and plan.get("release_at"):
+                line += "  -  grid carries the house, the pack is the reserve"
+            elif plan.get("phase") == "night":
+                line += " (~%s)" % plan.get("turnaround")
+            elif plan.get("phase") == "floor":
+                line += " past %s%%" % plan.get("resume")
+            self._text(hdc, line, pad, sy, width - pad * 2 - 90, 18,
+                       INK_FAINT if plan.get("want") == plan.get("current") or not plan.get("enabled")
+                       else WARN, 11)
         elif source in ("battery", "solar+battery"):
             self._text(hdc, "Drawing on the pack by priority (SBU) - the grid is there and unused",
                        pad, sy, width - pad * 2 - 90, 18, INK_FAINT, 11)

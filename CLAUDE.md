@@ -39,7 +39,10 @@ against the unit. What follows is measured unless it says otherwise.
   field 17 -- an earlier note said 1, wrong), so the house runs from the
   battery overnight **with the grid present** (seen 2026-09-20: mode B, 9 A
   discharge, 242 V on the input). A real outage therefore starts from a
-  part-drained pack. Not changed; it is the owner's setting.
+  part-drained pack. Not static either: the inverter's own timer (menu 99)
+  flips it to SUB in the evening and back to SBU at 02:00 (QPIRI reads
+  2026-09-19..22; the 02:00-07:21 "by priority" episode on the 21st). The
+  autopilot below replaces that timer once it is cleared.
 - **`QMOD = B` is inverter mode, not "on battery".** The unit sits in B all
   day on solar with the pack charging (266 samples on 2026-09-20). B means the
   inverter stage makes the AC from the DC bus; L means grid bypass. Who is
@@ -98,7 +101,12 @@ Everything the original gate asked for is done.
       did not, for five hours and then for 28 minutes, on 2026-09-20 -- see
       FINDINGS)
 
-Not done, deliberately: no power-behaviour write has ever been sent.
+- [x] The SUB/SBU autopilot, advisory: decides every cycle, logs and shows
+      it, writes nothing until `AUTO_PRIORITY` is on (2026-09-22)
+
+Not done, deliberately: no power-behaviour write has ever been sent. The
+first one will be a `POP` from the autopilot, after the inverter's timer
+(menu 99) is cleared and `AUTO_PRIORITY = True` is set in `config.local.py`.
 
 ## Goals, in priority order
 
@@ -178,6 +186,26 @@ Not done, deliberately: no power-behaviour write has ever been sent.
 7. **Daily production.** From the inverter's own `QED` counter, shown on the
    watch screen with yesterday against the 7-day median; a drop past
    `PV_DROP_WARN_FRACTION` says "check the panels".
+8. **Automatic output priority.** The owner's rule (2026-09-22) in
+   `src/policy.py`, replacing the inverter's timer: SBU through the sun's
+   window; SUB from dusk so the pack stays the outage reserve; SBU again
+   the moment the expected draw to the turnaround fits in what is above
+   the floor, so the pack lands on the floor as the sun starts lifting it;
+   SUB at the floor (30 %) at any hour, until the sun has it past 35 %
+   inside the window. Turnaround = yesterday's lowest-SOC time when it
+   fell between 03:00 and noon; dusk = the end of the last hour at a
+   quarter of the best PV hour, yesterday; pack Wh = the SOC-scale median
+   the episodes imply; efficiency and the hourly load from the last 7
+   finished days (`src/days.py`, the cache the history window also uses,
+   built in a thread once a day). `src/autopilot.py` is the collector
+   glue: verify by QPIRI every 5 min, write with readback (an ACK is not
+   evidence), 10-minute dwell except the floor, stand down if the owner
+   set UTI. `python ctl.py auto` prints the profile, the verdict and the
+   release time per SOC with no link. Published as `policy` in
+   `logs/state.json`; the watch status line and the tray menu show it.
+   **Advisory by default**: `AUTO_PRIORITY = False`. It is its own gate,
+   like the clock, because this is the setting the owner already flips
+   twice a day; `ALLOW_WRITES` still guards everything else.
 
 What the inverter cannot give: a per-line load. It reports one combined
 output and carries **no per-line figure at all** -- there is nothing to tell
@@ -195,7 +223,7 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 | `PhantomBridge.spec` | The PyInstaller build: one folder, no console, `icon.ico`. |
 | `probe.py` | Read-only recon: find the dongle, report which transport is available. |
 | `collector.py` | The resident poller. Redirect, poll, log JSONL, publish `logs/state.json`. |
-| `ctl.py` | One-shot CLI: reads, writes, clock, discovery sweep, restore. |
+| `ctl.py` | One-shot CLI: reads, writes, clock, discovery sweep, restore, `auto` (the SUB/SBU plan, no link). |
 | `tray.py` | Windows notification-area battery readout. |
 | `watch.py` | The watch screen: a GDI/GDI+ window hosted by the tray process. `--png` for a frame. |
 | `insights.py` | Usage report from the logs. Opens no link. |
@@ -206,6 +234,9 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 | `src/bridge.py` | Shared connect/log/poll/clock-sync used by both entry points. |
 | `src/flow.py` | Power-flow derivation and the ASCII panel. |
 | `src/energy.py` | The day book: inverter counters plus integrated battery/grid Wh. Doctested. |
+| `src/days.py` | Every finished day's analysis, parsed once and cached under `logs/days/`; today read incrementally. Shared by history and the autopilot. |
+| `src/policy.py` | The SUB/SBU rule: profile from day analyses, need/usable arithmetic, the Governor. Pure, doctested. |
+| `src/autopilot.py` | The collector's side of it: daily profile in a thread, QPIRI verify, POP write with readback, the `policy` payload. |
 | `src/clock.py` | SNTP client and clock encoding. Doctested. |
 | `src/arbiter.py` | Named-mutex link arbitration and the no-spin idle wait. |
 | `src/netutil.py` | LAN address / broadcast / firewall helpers. |
@@ -218,7 +249,10 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 - `config.py` holds every site-specific value. Nothing hardcoded elsewhere.
 - `ALLOW_WRITES` stays `False`. It gates power behaviour. The clock is gated
   separately by `ALLOW_CLOCK_WRITES`, which is on, because an RTC cannot make
-  units fight or mistreat a battery.
+  units fight or mistreat a battery. The output priority is gated separately
+  too, by `AUTO_PRIORITY` (off in `config.py`, flipped in `config.local.py`):
+  it is the one setting the owner already changes twice a day, and only
+  `POP01`/`POP02` pass through it.
 - `docs/FINDINGS.md` is append-only and dated. Log what the hardware says,
   including the failures.
 - Console output is **ASCII only** — the Windows console code page will not

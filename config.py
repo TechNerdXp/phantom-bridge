@@ -223,6 +223,73 @@ PV_DROP_WARN_FRACTION = 0.7
 
 
 # --------------------------------------------------------------------------
+# Automatic output priority -- SBU by day, SUB in the evening, SBU again
+# once the pack can carry the rest of the night. See src/policy.py.
+# --------------------------------------------------------------------------
+
+# The one switch. False: the collector works out what it WOULD set every
+# cycle, logs the decisions and shows them on the watch screen and in the
+# tray, and writes nothing. True: it also sends POP01 / POP02 and reads
+# QPIRI back to prove the setting moved -- an ACK is not evidence here any
+# more than it is for the clock.
+#
+# Gated on its own, like the clock, because output priority is the one
+# setting the owner already flips twice a day with the inverter's own timer
+# (menu 99). Turn that timer OFF before turning this on, or the two fight.
+# The inverter's other setpoints (voltages, currents) stay behind
+# ALLOW_WRITES, which stays False.
+AUTO_PRIORITY = False
+
+# The floor: at or under this SOC the house goes to the grid (SUB) whatever
+# the time, and stays there until the sun is lifting the pack -- past the
+# turnaround AND back over the resume level. The gap between the two is the
+# hysteresis that stops it flapping around the floor at dawn.
+AUTO_SOC_FLOOR = 30
+AUTO_SOC_RESUME = 35
+
+# The picture the decisions are made from: the last N finished days'
+# analyses (logs/days/), yesterday first. Yesterday alone gives the
+# turnaround and the dusk; the whole window gives the hourly load, the
+# pack size the episodes imply and the battery-to-load efficiency.
+AUTO_HISTORY_DAYS = 7
+
+# Dusk is the end of the last hour whose mean PV was at least this fraction
+# of the day's best hour, from yesterday. 0.25 puts it an hour before the
+# panels go dark, which is when the pack would otherwise start carrying
+# the house and spending the reserve an outage may need.
+AUTO_DUSK_PV_FRACTION = 0.25
+
+# Used only until there are days to read, or when a day has no usable
+# figure. HH:MM site time; watts.
+AUTO_DEFAULT_TURNAROUND = "07:00"
+AUTO_DEFAULT_DUSK = "17:00"
+AUTO_DEFAULT_NIGHT_LOAD_W = 400
+
+# The pack in SOC-scale watt-hours: what 100 % of the inverter's SOC is
+# worth. None = the median the on-battery episodes imply (Wh drawn per SOC
+# point), which is the right scale even though the SOC is voltage-derived,
+# because SOC points are what the floor and the release are measured in.
+# A number pins it. Falls back to BATTERY_CAPACITY_AH x 51.2, then to
+# AUTO_FALLBACK_PACK_WH.
+BATTERY_PACK_WH = None
+AUTO_FALLBACK_PACK_WH = 2000
+
+# Load watt-hours per battery watt-hour on a night episode. Derived from
+# the episodes when there are enough; this is the fallback.
+AUTO_EFFICIENCY_FALLBACK = 0.88
+
+# No two writes closer than this, except the floor rule, which is
+# protective and may write at once. Also the back-off after a NAK or a
+# write that did not move QPIRI.
+AUTO_MIN_DWELL_S = 600
+
+# How often the collector re-reads QPIRI to confirm the priority is what it
+# thinks it is. A change it did not make is logged as an external one --
+# that is what the inverter's own timer looks like from here.
+AUTO_VERIFY_INTERVAL_S = 300
+
+
+# --------------------------------------------------------------------------
 # Safety
 # --------------------------------------------------------------------------
 

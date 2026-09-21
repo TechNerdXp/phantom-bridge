@@ -133,6 +133,49 @@ The clock is gated separately by `ALLOW_CLOCK_WRITES`, which is on: an RTC
 cannot make units fight each other or mistreat a battery, so it does not
 belong behind the same gate as charge voltages.
 
+## Automatic output priority
+
+The one setting the owner changes twice a day -- SBU or SUB -- is decided by
+the collector from the logs instead of by the inverter's own timer (menu 99).
+The rule, in `src/policy.py`:
+
+- **Day**, from the turnaround to dusk: **SBU**. Solar and the pack carry the
+  house.
+- **Dusk** -- the end of the last hour whose PV was still a quarter of the
+  best hour, yesterday: **SUB**. The grid carries the house and the pack is
+  kept as the reserve an outage will need. If the grid drops, the inverter
+  uses the pack regardless.
+- **Night release**: every cycle it works out how many watt-hours the house
+  will draw from now until the turnaround (the hourly load over the last
+  week, over the measured battery-to-load efficiency) and compares it with
+  what the pack holds above the floor. The moment they match it switches to
+  **SBU**, so the pack lands on the floor just as the sun starts lifting it.
+  Eleven, two, three -- the load decides, and an outage that spent some of
+  the reserve pushes the release later on its own.
+- **Turnaround**: yesterday's lowest-SOC time, when it fell between 03:00 and
+  noon -- the minute the sun started pushing the pack up.
+- **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has
+  lifted the pack past 35 % inside the day window. The 5-point gap is what
+  stops it flapping at dawn.
+
+`python ctl.py auto` prints the profile it read (turnaround, dusk, pack Wh
+per SOC point, efficiency, the night's hourly load), the verdict for this
+moment, and the release time for every SOC from here -- with no link
+opened. The collector logs `priority-plan` once a day, `priority-decision`
+on every change of mind, and the watch screen's status line and the tray
+menu carry the same verdict.
+
+It ships **advisory**: `AUTO_PRIORITY = False` computes and shows everything
+and writes nothing. Turn the inverter's own timer off first (menu 99), then
+set `AUTO_PRIORITY = True` in `config.local.py`; from then on the collector
+sends `POP01` / `POP02`, waits, reads `QPIRI` back and logs `priority-set`
+with the verdict -- an ACK is never taken as proof, exactly as for the
+clock. It re-reads `QPIRI` every five minutes regardless, and a change it
+did not make is logged as `priority-external-change` (that is what the
+timer, or a hand on the panel, looks like). No two writes within ten
+minutes, except the floor rule, which is protective. Every number above is
+in the "Automatic output priority" block of `config.py`.
+
 ## The tray readout
 
 `pythonw tray.py` puts the state of charge in the notification area: the exact

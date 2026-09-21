@@ -411,4 +411,42 @@ broadcast `set>server=` has exactly one listener; a multi-dongle site would
 need to think again. The real fix is on the router: a DHCP reservation for
 the dongle's MAC. Not done yet.
 
+### 2026-09-22 -- what the inverter's own SUB/SBU timer does, and the autopilot that replaces it
+
+The output priority is not static: the QPIRI reads across sessions show
+it at **SUB (1) at 22:03-22:42** on the 19th and 20th and at **SBU (2) at
+02:08, 07:15, 12:13 and 14:45**. That is the inverter's timer (menu 99),
+which the owner set to hold the pack in the evening and release it at
+02:00. Last night's log (2026-09-21) shows exactly that: one on-battery
+episode "by priority" from **02:00 to 07:21, 1348 Wh at 252 W, SOC 65 ->
+37**, lowest at 07:14, when the sun took over. It also shows the cost of
+SBU in the late afternoon: 16:12-16:54, **490 Wh, 93 -> 82 %**, spent
+while the grid was there, an hour before the panels went dark.
+
+Built today, advisory by default: `src/policy.py` (the rule, doctested),
+`src/autopilot.py` (the collector glue: daily profile in a thread, verify
+by QPIRI, write with readback), `python ctl.py auto` (the plan, no link).
+The profile it read from three finished days:
+
+```
+turnaround  07:14   lowest SOC 2026-09-21 at 07:14
+dusk        17:00   PV under 25% of its best hour after 17:00 on 2026-09-21
+pack        4768 Wh per 100% SOC   median of 5 episodes
+efficiency  0.78 load Wh per battery Wh   (1475 Wh of load per 1897 Wh drawn)
+night load  00h 372W 01h 408W 02h 241W 03h 120W 04h 91W 05h 316W 06h 317W
+            17h 525W 18h 404W 19h 378W 20h 483W 21h 555W 22h 373W 23h 395W
+```
+
+At 03:11, SOC 41 %, it would have said **SUB, hold, release ~06:01**
+(1161 Wh needed to the turnaround, 524 Wh above the floor) -- where the
+timer had already released the pack at 02:00. From 60 % up it would
+release at once at that hour; from 100 % at dusk, the release lands
+around midnight. The pack figure is SOC-scale, from the episodes, and the
+SOC is voltage-derived: the number is consistent with the floor and the
+release, which are measured in SOC points, not with the nameplate.
+
+Not yet done: the timer is still set on the inverter, and `AUTO_PRIORITY`
+is off. No POP has been sent. The first write happens after the timer is
+cleared and the switch is flipped in `config.local.py`.
+
 ## Next entry goes here

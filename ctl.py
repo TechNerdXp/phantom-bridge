@@ -12,6 +12,7 @@
     python ctl.py set output-priority sbu    write one (needs ALLOW_CLOCK_WRITES)
     python ctl.py raw QPIGS                  send anything
     python ctl.py discover                   identification sweep -> FINDINGS
+    python ctl.py auto                       the SUB/SBU plan: profile, verdict, release times
     python ctl.py handover --minutes 15      lend the dongle to the phone app
     python ctl.py restore                    hand the dongle back to the cloud
 
@@ -353,6 +354,83 @@ def cmd_discover(args, conn, log) -> int:
     return 0
 
 
+def cmd_auto(args, conn, log) -> int:
+    """The output-priority plan, from the logs and the published state.
+
+    Opens no link: the profile is what the collector reads, and the SOC is
+    the one it last published. The table at the end is the release time
+    for a range of SOCs at this moment, so the rule can be sanity-checked
+    against tonight before AUTO_PRIORITY is turned on.
+    """
+    import datetime as dt
+    import json
+    import autopilot
+    import days
+    import policy
+
+    now = bridge.now_site()
+    store = days.DayStore()
+    prof = autopilot.build_for(store, now.date())
+    state = bridge.read_state(max_age_s=900) or {}
+    soc = state.get("soc")
+    naive = now.replace(tzinfo=None)
+    gov = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME)
+    decision = gov.decide(prof, naive, soc)
+    published = state.get("policy") or {}
+
+    if args.json:
+        print(json.dumps({"profile": prof.as_dict(), "soc": soc,
+                          "decision": {"want": decision.name, "phase": decision.phase,
+                                       "reason": decision.reason,
+                                       "release_at": decision.release_at.isoformat(timespec="minutes")
+                                       if decision.release_at else None,
+                                       "need_wh": round(decision.need_wh),
+                                       "usable_wh": round(decision.usable_wh)},
+                          "published": published}, indent=1))
+        return 0
+
+    switch = "ON -- the collector writes POP" if config.AUTO_PRIORITY else "OFF -- advisory only"
+    print(f"\nAutomatic output priority: {switch}")
+    print(f"  floor {config.AUTO_SOC_FLOOR}%  resume {config.AUTO_SOC_RESUME}%  "
+          f"dwell {config.AUTO_MIN_DWELL_S}s\n")
+    print(f"PROFILE  from {prof.days} finished day(s)")
+    print(f"  turnaround  {policy.fmt_hm(prof.turnaround_min)}   {prof.notes.get('turnaround')}")
+    print(f"  dusk        {policy.fmt_hm(prof.dusk_min)}   {prof.notes.get('dusk')}")
+    print(f"  pack        {prof.pack_wh:.0f} Wh per 100% SOC   {prof.notes.get('pack_wh')}")
+    print(f"  efficiency  {prof.efficiency:.2f} load Wh per battery Wh   {prof.notes.get('efficiency')}")
+    if prof.notes.get("hourly_load"):
+        print(f"  hourly load {prof.notes['hourly_load']}")
+    night = [h for h in range(24) if not (prof.turnaround_min <= h * 60 < prof.dusk_min)]
+    print("  night load  " + "  ".join(f"{h:02d}h {prof.hourly_load_w[h]:.0f}W" for h in night))
+
+    age = state.get("age_s")
+    soc_text = "--" if soc is None else f"{soc}%"
+    print(f"\nNOW      {now.strftime('%H:%M')}   SOC {soc_text}"
+          + (f"  (state.json {age}s old)" if age is not None else "  (no state.json)"))
+    print(f"  verdict     {decision.name}  [{decision.phase}]  {decision.reason}")
+    if decision.phase in ("hold", "night"):
+        print(f"  need {decision.need_wh:.0f} Wh to the turnaround, "
+              f"{decision.usable_wh:.0f} Wh above the floor")
+    if published:
+        print(f"  collector   {policy.headline(published)}  (current {published.get('current')})")
+        if published.get("last_write"):
+            print(f"  last write  {published['last_write']}")
+
+    print("\nRELEASE TIME BY SOC, from now")
+    for level in range(100, config.AUTO_SOC_FLOOR, -10):
+        t = policy.release_time(prof, naive, level, config.AUTO_SOC_FLOOR)
+        if t is None:
+            when = "never"
+        elif t <= naive:
+            when = "now"
+        elif t >= policy.next_turnaround(prof, naive):
+            when = "not tonight"
+        else:
+            when = t.strftime("%H:%M")
+        print(f"  {level:3d}%  {when}")
+    return 0
+
+
 def cmd_handover(args, conn, log) -> int:
     """Lend the dongle back to the vendor cloud so the Android app can read it.
 
@@ -448,6 +526,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subs.add_parser("discover", help="identification sweep for FINDINGS.md")
 
+    auto = subs.add_parser("auto", help="the SUB/SBU plan from the logs; opens no link")
+    auto.add_argument("--json", action="store_true", help="the numbers, as JSON")
+
     hand = subs.add_parser("handover",
                            help="lend the dongle to the WatchPower app for a while")
     hand.add_argument("--minutes", type=float, default=15.0)
@@ -467,6 +548,7 @@ HANDLERS = {
     "controls": cmd_controls,
     "set": cmd_set,
     "discover": cmd_discover,
+    "auto": cmd_auto,
     "handover": cmd_handover,
     "restore": cmd_restore,
 }

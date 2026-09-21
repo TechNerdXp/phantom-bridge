@@ -37,6 +37,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
 import arbiter
+import autopilot
 import bridge
 import config
 import energy
@@ -60,6 +61,10 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
         if command != "QPIRI":
             bridge.read(conn, command, log)
             time.sleep(config.COMMAND_GAP)
+
+    # The output-priority autopilot: decides SUB / SBU every cycle from the
+    # last days' logs and the SOC. Advisory unless config.AUTO_PRIORITY.
+    auto = autopilot.Autopilot(log, (qpiri or {}).get("output_source_prio"))
 
     last_clock_sync = time.time()
     on_battery_since: float | None = None
@@ -180,7 +185,13 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
                 today["yesterday_pv_wh"], today["pv_baseline_wh"],
                 config.PV_DROP_WARN_FRACTION)
 
-            bridge.write_state(snap, today=today)
+            try:
+                policy_state = auto.step(conn, now, analysis)
+            except Exception as exc:          # noqa: BLE001 -- never the loop
+                log({"event": "priority-error", "error": repr(exc)})
+                policy_state = None
+
+            bridge.write_state(snap, today=today, policy=policy_state)
             if panel:
                 print("\n" + flowmod.render(analysis, when=bridge.now_site(),
                                             warnings=snap["warnings"]),

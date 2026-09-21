@@ -439,13 +439,98 @@ def clock_sync(conn, log=None, announce=print, force: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------
+# output priority -- the autopilot's write, proven by a QPIRI readback
+# --------------------------------------------------------------------------
+
+PRIORITY_NAMES = {0: "UTI", 1: "SUB", 2: "SBU"}
+_POP_CHOICE = {1: "solar", 2: "sbu"}
+
+
+def read_output_priority(conn, log=None) -> int | None:
+    """QPIRI's output_source_prio (0 UTI, 1 SUB, 2 SBU), or None."""
+    record = read(conn, "QPIRI", log)
+    if not record.get("ok") or record.get("nak"):
+        return None
+    return (record.get("data") or {}).get("output_source_prio")
+
+
+def set_output_priority(conn, code: int, log=None, announce=print,
+                        why: str = "") -> dict:
+    """Write POP01 (SUB) or POP02 (SBU), then read QPIRI back and compare.
+
+    Same shape as clock_sync: the ACK is recorded and ignored, a changed
+    QPIRI is the evidence. Gated on AUTO_PRIORITY (or ALLOW_WRITES).
+    """
+    result: dict = {"event": "priority-set", "want": PRIORITY_NAMES.get(code, code),
+                    "want_code": code, "why": why}
+    if code not in _POP_CHOICE:
+        result.update(ok=False, action="refused", verdict="only SUB (1) and SBU (2)")
+        if log:
+            log(result)
+        return result
+    if not (config.AUTO_PRIORITY or config.ALLOW_WRITES):
+        result.update(ok=False, action="skipped",
+                      verdict="AUTO_PRIORITY is False in config.py")
+        announce("Priority write skipped: AUTO_PRIORITY is False in config.py.")
+        if log:
+            log(result)
+        return result
+
+    before = read_output_priority(conn, log)
+    result["before"] = PRIORITY_NAMES.get(before, before)
+    if before == code:
+        result.update(ok=True, action="none", verdict="already set")
+        if log:
+            log(result)
+        return result
+
+    command = pi30.build_write("output-priority", _POP_CHOICE[code])
+    result["command"] = command
+    announce(f"  sending {command} ({result['want']})")
+    try:
+        reply = conn.request(command, config.COMMAND_TIMEOUT)
+    except linkmod.LinkError as exc:
+        result.update(ok=False, action="error", error=str(exc))
+        if log:
+            log(result)
+        return result
+    result["reply"] = reply.text
+    if reply.is_nak:
+        result.update(ok=False, action="nak", verdict="the inverter refused it")
+        announce("  NAK.")
+        if log:
+            log(result)
+        return result
+
+    time.sleep(1.5)
+    after = read_output_priority(conn, log)
+    result["after"] = PRIORITY_NAMES.get(after, after)
+    if after == code:
+        result.update(ok=True, action="set",
+                      verdict=f"QPIRI now reads {result['want']}")
+        announce(f"  CONFIRMED: output priority is {result['want']}.")
+    elif after is None:
+        result.update(ok=False, action="ack-unverified",
+                      verdict="accepted, but QPIRI did not answer to prove it")
+        announce("  Accepted, but no readback to prove it took.")
+    else:
+        result.update(ok=False, action="ack-ignored",
+                      verdict=f"ACK, but QPIRI still reads {result['after']}")
+        announce(f"  ACK but QPIRI still reads {result['after']}.")
+    if log:
+        log(result)
+    return result
+
+
+# --------------------------------------------------------------------------
 # published state -- how the tray sees the inverter without a second session
 # --------------------------------------------------------------------------
 
 STATE_PATH = LOG_DIR / "state.json"
 
 
-def write_state(snap: dict, source: str = "collector", today: dict | None = None) -> None:
+def write_state(snap: dict, source: str = "collector", today: dict | None = None,
+                policy: dict | None = None) -> None:
     """Publish the latest snapshot for other processes to read.
 
     Written to a temp file and renamed, so a reader never sees half a file.
@@ -464,6 +549,7 @@ def write_state(snap: dict, source: str = "collector", today: dict | None = None
         "soc": (snap.get("qpigs") or {}).get("batt_soc"),
         "trust_soc": config.TRUST_SOC,
         "today": today or {},
+        "policy": policy or {},
     }
     tmp = STATE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

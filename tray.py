@@ -62,6 +62,7 @@ import bridge
 import flow as flowmod
 import config
 import history
+import policy
 import watch
 
 if sys.platform != "win32":
@@ -781,6 +782,9 @@ class TrayWindow:
             basis = "" if reading.trust_soc else "  (voltage estimate)"
             user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
                                f"   {soc} at {volts:.2f} V{basis}"[:52])
+        plan = policy.headline(reading.state.get("policy"))
+        if plan:
+            user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, ("   " + plan)[:52])
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
 
         user32.AppendMenuW(menu, MF_STRING, ID_WATCH, "Open watch screen")

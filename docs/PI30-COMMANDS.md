@@ -107,6 +107,14 @@ Responses are `(ACK` or `(NAK`.
 None of these has been sent to this unit. `ALLOW_WRITES` is still `False`;
 only the clock has been written.
 
+`POP01` / `POP02` have their own gate, `AUTO_PRIORITY` (2026-09-22): the
+collector's output-priority autopilot (`src/policy.py`) writes them when it
+is on, and proves each one by reading `QPIRI` back -- `output_source_prio`
+must read 1 (SUB) or 2 (SBU) after the write, or it is logged as
+`ack-ignored`. Off, it only logs what it would set. The inverter's own
+timer (menu 99) flips the same setting: observed SUB by 22:03 and SBU at
+02:00 on 2026-09-20/21, so the two must not both be active.
+
 ## The clock — the assumption that was wrong
 
 This file used to say `DAT` is absent from the published Axpert PI30 spec and
