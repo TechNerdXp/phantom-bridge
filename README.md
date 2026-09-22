@@ -178,8 +178,9 @@ The rule, in `src/policy.py`:
   the pack rises for other reasons: a low **before that day's first PV** is
   thrown out (a utility charge lifts it too, and that rise is not a sunrise),
   and a candidate more than `TURNAROUND_DRIFT_MIN` from the recent median is
-  distrusted in favour of the median, so one odd morning cannot drag the
-  whole day's frame.
+  rejected outright, **keeping the last credible day** -- a rainy morning the
+  sun never lifts moves this further than a day of season ever does. Dusk is
+  behind the same band, since it sets the evening reserve.
 - **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has
   lifted the pack past 35 % inside the day window. The 5-point gap is what
   stops it flapping at dawn.

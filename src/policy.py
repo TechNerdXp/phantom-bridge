@@ -98,6 +98,10 @@ OUTAGE_SPOILS_S = 30 * 60
 # it; the first is the sun itself (_dawn_low).
 TURNAROUND_DRIFT_MIN = 90
 
+# The same band on dusk, which sets the evening reserve and so the earliest
+# the pack can be spent. A day the sun never got going puts it hours early.
+DUSK_DRIFT_MIN = 90
+
 # Nominal 48 V LiFePO4 bus, for BATTERY_CAPACITY_AH -> Wh.
 NOMINAL_V = 51.2
 
@@ -192,6 +196,36 @@ def _dawn_low(day: dict):
     return m
 
 
+def _dusk_of(day: dict, fraction: float):
+    """A day's dusk: the end of the last hour whose mean PV was still that
+    fraction of the day's best hour, never later than the last PV seen.
+
+    None when the record has no sun worth reading -- a peak under 100 W is
+    not a day the house was carried through.
+
+    >>> hours = [{"hour": h, "pv_w": 0 if not 7 <= h < 17 else 2000} for h in range(24)]
+    >>> fmt_hm(_dusk_of({"hours": hours, "pv_last": "17:26"}, 0.25))
+    '17:00'
+    >>> fmt_hm(_dusk_of({"hours": hours, "pv_last": "16:40"}, 0.25))   # sun stopped first
+    '16:40'
+    >>> _dusk_of({"hours": [{"hour": 12, "pv_w": 40}]}, 0.25) is None  # overcast
+    True
+    >>> _dusk_of({}, 0.25) is None
+    True
+    """
+    hours = [(h.get("hour"), h.get("pv_w")) for h in ((day or {}).get("hours") or [])
+             if h.get("pv_w") is not None and h.get("hour") is not None]
+    if not hours:
+        return None
+    peak = max(w for _, w in hours)
+    if peak < 100:
+        return None
+    last = max(h for h, w in hours if w >= fraction * peak)
+    dusk = (last + 1) * 60
+    pv_last = parse_hm(day.get("pv_last"))
+    return min(dusk, pv_last) if pv_last is not None else dusk
+
+
 def build_profile(days: list, *, default_turnaround: str = "07:00",
                   default_dusk: str = "17:00", default_load_w: float = 400.0,
                   dusk_fraction: float = 0.25, pack_wh: float | None = None,
@@ -239,17 +273,18 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
         >>> prof.notes["turnaround_dropped"]
         ['2026-09-22: low at 04:30, first sun 07:00']
 
-    And a candidate far from the last few days is distrusted in favour of
-    their median, so one odd morning cannot drag the day's frame::
+    And a candidate far from the last few days is rejected outright, keeping
+    the last credible day -- a rainy morning the sun never lifts moves this
+    further than a day of season ever does::
 
         >>> prof = build_profile([_fake_day("2026-09-22", soc_min_at="10:30"),
         ...                       _fake_day("2026-09-21", soc_min_at="07:14"),
         ...                       _fake_day("2026-09-20", soc_min_at="07:10"),
         ...                       _fake_day("2026-09-19", soc_min_at="07:20")])
-        >>> fmt_hm(prof.turnaround_min)
-        '07:17'
-        >>> prof.notes["turnaround"]
-        'lowest SOC 2026-09-22 at 10:30 is 193 min off the 4-day median - using the median 07:17'
+        >>> fmt_hm(prof.turnaround_min), prof.notes["turnaround"]
+        ('07:14', 'lowest SOC 2026-09-21 at 07:14')
+        >>> prof.notes["turnaround_dropped"]
+        ['2026-09-22: low at 10:30, 193 min off the 4-day median 07:17']
     """
     notes: dict = {}
     days = [d for d in (days or []) if d and d.get("samples")]
@@ -270,17 +305,26 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
                                                  d.get("pv_first") or "none"))
     valid = [(d, m) for d, m in seen if m is not None]
     if valid:
-        d, m = valid[0]
         mid = statistics.median([x for _, x in valid])
-        if len(valid) >= 3 and abs(m - mid) > TURNAROUND_DRIFT_MIN:
-            turnaround = int(mid)
-            notes["turnaround"] = (
-                "lowest SOC %s at %s is %d min off the %d-day median - "
-                "using the median %s" % (d.get("date"), d.get("soc_min_at"),
-                                         abs(m - mid), len(valid), fmt_hm(mid)))
-        else:
+        for d, m in valid:
+            if len(valid) >= 3 and abs(m - mid) > TURNAROUND_DRIFT_MIN:
+                # An incredible jump: keep the last good day instead. A
+                # rainy morning the sun never lifts, or a charge from the
+                # grid, moves this figure further than a day of season
+                # ever does.
+                notes.setdefault("turnaround_dropped", []).append(
+                    "%s: low at %s, %d min off the %d-day median %s"
+                    % (d.get("date"), d.get("soc_min_at"), abs(m - mid),
+                       len(valid), fmt_hm(mid)))
+                continue
             turnaround = m
             notes["turnaround"] = "lowest SOC %s at %s" % (d.get("date"), d.get("soc_min_at"))
+            break
+        if turnaround is None:                # every day disagrees with every other
+            d, m = valid[0]
+            turnaround = m
+            notes["turnaround"] = ("lowest SOC %s at %s - no day inside the band"
+                                   % (d.get("date"), d.get("soc_min_at")))
     if turnaround is None:
         for d in days:
             m = parse_hm(d.get("pv_first"))
@@ -292,24 +336,32 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
         turnaround = parse_hm(default_turnaround) or 7 * 60
         notes["turnaround"] = "default"
 
-    # -- dusk: the end of the last hour still at a quarter of the best hour
+    # -- dusk: the end of the last hour still at a quarter of the best hour,
+    # behind the same band as the turnaround. A day the sun never really got
+    # going puts this hours early, and dusk is what opens the evening
+    # reserve, so an incredible one is rejected and the last good day kept.
     dusk = None
-    for d in days:
-        hours = [(h.get("hour"), h.get("pv_w")) for h in (d.get("hours") or [])
-                 if h.get("pv_w") is not None and h.get("hour") is not None]
-        if not hours:
-            continue
-        peak = max(w for _, w in hours)
-        if peak < 100:
-            continue                      # no real sun in that record
-        last = max(h for h, w in hours if w >= dusk_fraction * peak)
-        dusk = (last + 1) * 60
-        pv_last = parse_hm(d.get("pv_last"))
-        if pv_last is not None:
-            dusk = min(dusk, pv_last)
-        notes["dusk"] = "PV under %d%% of its best hour after %s on %s" % (
-            round(dusk_fraction * 100), fmt_hm(dusk), d.get("date"))
-        break
+    duskers = [(d, _dusk_of(d, dusk_fraction)) for d in days]
+    valid_dusk = [(d, m) for d, m in duskers if m is not None]
+    if valid_dusk:
+        mid = statistics.median([x for _, x in valid_dusk])
+        for d, m in valid_dusk:
+            if len(valid_dusk) >= 3 and abs(m - mid) > DUSK_DRIFT_MIN:
+                notes.setdefault("dusk_dropped", []).append(
+                    "%s: dusk %s, %d min off the %d-day median %s"
+                    % (d.get("date"), fmt_hm(m), abs(m - mid), len(valid_dusk),
+                       fmt_hm(mid)))
+                continue
+            dusk = m
+            notes["dusk"] = "PV under %d%% of its best hour after %s on %s" % (
+                round(dusk_fraction * 100), fmt_hm(m), d.get("date"))
+            break
+        if dusk is None:
+            d, m = valid_dusk[0]
+            dusk = m
+            notes["dusk"] = "PV under %d%% of its best hour after %s on %s - " \
+                            "no day inside the band" % (
+                                round(dusk_fraction * 100), fmt_hm(m), d.get("date"))
     if dusk is None:
         dusk = parse_hm(default_dusk) or 17 * 60
         notes["dusk"] = "default"
