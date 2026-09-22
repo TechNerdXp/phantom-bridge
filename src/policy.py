@@ -93,14 +93,48 @@ TOP_OF_SCALE = 90
 # landing says nothing about the plan and is not carried into the trim.
 OUTAGE_SPOILS_S = 30 * 60
 
-# How far yesterday's turnaround may sit from the recent median before it is
-# distrusted and the median used instead. The second of the two guards on
-# it; the first is the sun itself (_dawn_low).
-TURNAROUND_DRIFT_MIN = 90
+# How far the SUN itself moves on the clock in a day. The length of the day
+# changes fastest at the equinoxes, and at this site's latitude that is
+# about a minute and a half to two minutes a day -- split between the two
+# ends of it, so each end moves well under a minute. Two is a ceiling that
+# holds all year and at any latitude this inverter is likely to sit at.
+# Anything past the band built from it did not move because of the sun.
+SUN_DRIFT_MIN_PER_DAY = 2.0
 
-# The same band on dusk, which sets the evening reserve and so the earliest
-# the pack can be spent. A day the sun never got going puts it hours early.
-DUSK_DRIFT_MIN = 90
+# What the reading itself adds on top. The turnaround is not sunrise: it is
+# the minute PV overtakes the house, so a cloudy dawn, a heavier morning or
+# a fridge cycling moves it a few minutes with the sun exactly where it was.
+# The measured spread on this site is 0-1 min/day (07:14, 07:14, 07:15).
+#
+# Panel cleanliness lives here too. Dust drifts the crossing later by a
+# little each week, which the median absorbs because it is gradual -- but a
+# WASH is a step: the panels make more at the same hour overnight and the
+# crossing jumps earlier in one day. That step is real and must not be
+# rejected, so the tolerance carries room for it.
+TURNAROUND_NOISE_MIN = 15
+
+# Dusk is read at HOUR resolution -- the end of the last hour still at a
+# quarter of the peak -- so two consecutive days legitimately differ by a
+# whole hour with nothing having changed but a cloud at the margin. One
+# step of the quantum is the reading; two is a different day. A wash moves
+# this end too -- cleaner panels hold a quarter of their peak later -- but
+# the quantum already swallows far more than a wash is worth.
+DUSK_QUANTUM_MIN = 60
+
+
+def drift_band(base_min: float, days: int) -> float:
+    """How far a day's figure may sit from the median of `days` days before
+    the sun cannot explain it: the reading's own noise, plus the sun's
+    movement across the window it is being compared with.
+
+    >>> drift_band(TURNAROUND_NOISE_MIN, 3), drift_band(TURNAROUND_NOISE_MIN, 7)
+    (21.0, 29.0)
+    >>> drift_band(DUSK_QUANTUM_MIN, 3)
+    66.0
+    >>> drift_band(TURNAROUND_NOISE_MIN, 0)         # never less than a day
+    17.0
+    """
+    return float(base_min) + SUN_DRIFT_MIN_PER_DAY * max(1, int(days))
 
 # Nominal 48 V LiFePO4 bus, for BATTERY_CAPACITY_AH -> Wh.
 NOMINAL_V = 51.2
@@ -284,7 +318,7 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
         >>> fmt_hm(prof.turnaround_min), prof.notes["turnaround"]
         ('07:14', 'lowest SOC 2026-09-21 at 07:14')
         >>> prof.notes["turnaround_dropped"]
-        ['2026-09-22: low at 10:30, 193 min off the 4-day median 07:17']
+        ['2026-09-22: low at 10:30, 193 min off the 4-day median 07:17 (band 23)']
     """
     notes: dict = {}
     days = [d for d in (days or []) if d and d.get("samples")]
@@ -297,25 +331,26 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     # days, so a candidate far from their median is distrusted in favour
     # of the median.
     turnaround = None
-    seen = [(d, _dawn_low(d)) for d in days]
-    for d, m in seen:
+    lows = [(d, _dawn_low(d)) for d in days]
+    for d, m in lows:
         if m is None and parse_hm(d.get("soc_min_at")) is not None:
             notes.setdefault("turnaround_dropped", []).append(
                 "%s: low at %s, first sun %s" % (d.get("date"), d.get("soc_min_at"),
                                                  d.get("pv_first") or "none"))
-    valid = [(d, m) for d, m in seen if m is not None]
+    valid = [(d, m) for d, m in lows if m is not None]
     if valid:
         mid = statistics.median([x for _, x in valid])
+        band = drift_band(TURNAROUND_NOISE_MIN, len(valid))
         for d, m in valid:
-            if len(valid) >= 3 and abs(m - mid) > TURNAROUND_DRIFT_MIN:
+            if len(valid) >= 3 and abs(m - mid) > band:
                 # An incredible jump: keep the last good day instead. A
                 # rainy morning the sun never lifts, or a charge from the
                 # grid, moves this figure further than a day of season
                 # ever does.
                 notes.setdefault("turnaround_dropped", []).append(
-                    "%s: low at %s, %d min off the %d-day median %s"
+                    "%s: low at %s, %d min off the %d-day median %s (band %d)"
                     % (d.get("date"), d.get("soc_min_at"), abs(m - mid),
-                       len(valid), fmt_hm(mid)))
+                       len(valid), fmt_hm(mid), round(band)))
                 continue
             turnaround = m
             notes["turnaround"] = "lowest SOC %s at %s" % (d.get("date"), d.get("soc_min_at"))
@@ -345,12 +380,13 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     valid_dusk = [(d, m) for d, m in duskers if m is not None]
     if valid_dusk:
         mid = statistics.median([x for _, x in valid_dusk])
+        band = drift_band(DUSK_QUANTUM_MIN, len(valid_dusk))
         for d, m in valid_dusk:
-            if len(valid_dusk) >= 3 and abs(m - mid) > DUSK_DRIFT_MIN:
+            if len(valid_dusk) >= 3 and abs(m - mid) > band:
                 notes.setdefault("dusk_dropped", []).append(
-                    "%s: dusk %s, %d min off the %d-day median %s"
+                    "%s: dusk %s, %d min off the %d-day median %s (band %d)"
                     % (d.get("date"), fmt_hm(m), abs(m - mid), len(valid_dusk),
-                       fmt_hm(mid)))
+                       fmt_hm(mid), round(band)))
                 continue
             dusk = m
             notes["dusk"] = "PV under %d%% of its best hour after %s on %s" % (
@@ -420,6 +456,19 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     hourly = [fill if w is None else w for w in hourly]
     if missing:
         notes["hourly_load"] = "%d hours filled with %.0f W" % (len(missing), fill)
+
+    # -- what each day actually read, kept whether or not it was used. A
+    # rejected figure is still evidence: the mornings drift later as the
+    # panels dust up and step back early the day they are washed or the
+    # rain does it, and that pattern is only visible if the readings are
+    # written down (owner, 2026-09-23). Logged daily with the plan.
+    notes["observed"] = [
+        {"date": d.get("date"),
+         "low": d.get("soc_min_at"), "sun": d.get("pv_first"),
+         "turnaround": fmt_hm(t) if t is not None else None,
+         "dusk": fmt_hm(k) if k is not None else None,
+         "pv_last": d.get("pv_last")}
+        for (d, t), (_, k) in zip(lows, duskers)]
 
     # -- the rate: SOC points the pack gives up per kWh the house draws.
     # This is the currency the release is settled in, and the reason it is

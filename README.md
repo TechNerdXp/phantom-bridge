@@ -177,10 +177,18 @@ The rule, in `src/policy.py`:
   noon -- the minute the sun started pushing the pack up. Two guards, because
   the pack rises for other reasons: a low **before that day's first PV** is
   thrown out (a utility charge lifts it too, and that rise is not a sunrise),
-  and a candidate more than `TURNAROUND_DRIFT_MIN` from the recent median is
-  rejected outright, **keeping the last credible day** -- a rainy morning the
-  sun never lifts moves this further than a day of season ever does. Dusk is
-  behind the same band, since it sets the evening reserve.
+  and a candidate further from the recent median than the **sun itself could
+  move** is rejected outright, **keeping the last credible day** -- a rainy
+  morning the sun never lifts moves this further than a day of season ever
+  does. The band is `SUN_DRIFT_MIN_PER_DAY` (2 min, the ceiling on how far
+  either end of the day moves in 24 h at this latitude) across the window,
+  plus 15 min for the reading itself: it is a PV-versus-load crossing, so
+  cloud, load and panel cleanliness move it with the sun exactly where it
+  was. Dust drifts it later week by week and a wash steps it earlier in a
+  day; both are real and neither is rejected. Dusk is behind the same
+  construction on its own hour quantum. Every day's raw reading is kept
+  whether used or not (`ctl.py auto` prints them), so the pattern is
+  learnable.
 - **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has
   lifted the pack past 35 % inside the day window. The 5-point gap is what
   stops it flapping at dawn.

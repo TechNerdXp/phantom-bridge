@@ -446,6 +446,23 @@ def cmd_auto(args, conn, log) -> int:
     night = [h for h in range(24) if not (prof.turnaround_min <= h * 60 < prof.dusk_min)]
     print("  night load  " + "  ".join(f"{h:02d}h {prof.hourly_load_w[h]:.0f}W" for h in night))
 
+    # What each day read, used or not. A rejected figure is still evidence:
+    # the mornings drift later as the panels dust up and step back the day
+    # they are washed or the rain does it.
+    observed = prof.notes.get("observed") or []
+    if observed:
+        print("\nOBSERVED  (kept whether used or not -- dust drifts it late, a wash steps it early)")
+        print("  %-12s %-7s %-7s %-11s %-7s %s" % ("day", "low", "sun", "turnaround",
+                                                   "dusk", "last sun"))
+        for o in observed:
+            print("  %-12s %-7s %-7s %-11s %-7s %s" % (
+                o.get("date") or "?", o.get("low") or "-", o.get("sun") or "-",
+                o.get("turnaround") or "rejected", o.get("dusk") or "rejected",
+                o.get("pv_last") or "-"))
+        for key in ("turnaround_dropped", "dusk_dropped"):
+            for line in prof.notes.get(key) or []:
+                print(f"  dropped   {line}")
+
     age = state.get("age_s")
     soc_text = "--" if soc is None else f"{soc}%"
     print(f"\nNOW      {now.strftime('%H:%M')}   SOC {soc_text}"

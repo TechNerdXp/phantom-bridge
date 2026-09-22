@@ -277,12 +277,22 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    fell between 03:00 and noon, behind **two guards** (owner, 2026-09-23):
    it must not be before that day's first PV, because a utility charge
    lifts the pack too and that rise is not a sunrise; and it must be
-   within `TURNAROUND_DRIFT_MIN` of the recent median, or it is rejected
+   within a band the **sun itself** can explain -- `SUN_DRIFT_MIN_PER_DAY`
+   (2 min, the ceiling on how far either end of the day moves in 24 h at
+   this latitude) times the window, plus `TURNAROUND_NOISE_MIN` (15) for
+   the reading, which is a PV-versus-load crossing and moves with cloud,
+   load and **panel cleanliness** -- dust drifts it later week by week
+   (absorbed, it is gradual) and a wash steps it earlier in one day
+   (allowed, it is real). Outside that band it is rejected
    and **the last credible day kept** -- a rainy morning the sun never
    lifts, or a grid charge, moves this further than a day of season ever
-   does. Dusk is behind the same band (`DUSK_DRIFT_MIN`), because it sets
-   the evening reserve. Rejections are listed in `notes.turnaround_dropped`
-   and `notes.dusk_dropped`. dusk = the end of the last hour at a
+   does. Dusk is behind the same
+   construction on `DUSK_QUANTUM_MIN` (60), because it is read at hour
+   resolution and two days may legitimately differ by a whole step.
+   Rejections are listed in `notes.turnaround_dropped` / `notes.dusk_dropped`,
+   and **every day's raw reading is kept in `notes.observed`** whether used
+   or not -- logged daily with the plan and printed by `ctl.py auto` -- so
+   the dust-and-wash pattern is visible rather than thrown away. dusk = the end of the last hour at a
    quarter of the best PV hour, yesterday; pack Wh = the SOC-scale median
    the episodes imply; efficiency and the hourly load from the last 7
    finished days (`src/days.py`, the cache the history window also uses,
