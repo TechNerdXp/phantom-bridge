@@ -677,4 +677,69 @@ describing: a **voltage floor** in the policy (SUB when the battery
 voltage under load falls under a set level, say 50 V), so the pack's
 real state, not the decaying number, is what stops the drain.
 
+### 2026-09-22 -- the battery investigation opens: what four days of logs settle, and what they cannot
+
+Oracle #29 became the next job (owner, 06:55): sold 5 kWh, delivers ~2,
+the SOC slides at idle -- cells, BMS, inverter or settings? `_labs/` is
+the investigation folder (Switch-X's convention) and `_labs/pack_audit.py`
+is the first instrument: every QPIGS sample logged (41,494, 09-19 22:23
+to 09-22 13:39) joined to Switch-X's inverter_in / out_1 / out_2 meters.
+The dated output sits beside it. No link opened.
+
+**Settled by the logs**
+
+- *The pack is charged full every sunny morning.* 57.6-57.7 V by
+  10:40-11:08 three days running, charge current 0 at float with sun to
+  spare, held there till ~14:40-14:54. Bulk = float = 57.6 V (3.60 V/cell
+  on 16), 40 A, solar only, type 9. The top of the charge is not the
+  problem.
+- *The pack absorbs 2.7-3.1 kWh every morning* from the night's low
+  (40, 37, 29 %) to 100: 44 Wh per SOC point at the terminals, 50-57 Ah.
+  The charge figure is net battery current (in B mode, PV = load + V x A
+  within 6 %; the two Switch-X output meters agree with the inverter's
+  own load figure within 5-8 %). So the pack holds **at least ~2.5 kWh
+  above the 30-40 % state**, and is not a 2 kWh pack in any physical
+  sense. What lies under 29 % is unmeasured: no run has gone there, and
+  46.0 V has never been within 6 V.
+- *The idle slide is the number.* The 2 points/hour at rest (seven
+  stretches, -1.7 to -2.2) happen with a flat resting voltage, but on a
+  LiFePO4 plateau that alone proves little (53.3 V rest spans 60-84 % on
+  the map, 52.6 V spans 30-44 %). What proves it: the 03:42-06:20 stretch
+  this morning fell 39 -> 34 with **1.00 A mean flowing INTO the pack** on
+  the inverter's own sensor, and the slide starts at 14:40-14:54 with the
+  pack still at 57.6 V float and the charger idle. A real 2 pt/h drain
+  would be 1.6-1.9 A out; the sensor reads 0.
+- *The SOC is not a coulomb counter either.* 44 Wh per point in on the
+  charge side, 48-55 out on the discharge side (median 54 raw; 77 net of
+  the slide). More energy out per point than in per point is impossible
+  for a counter. It is the inverter's estimate with a clock in it, clamped
+  at 100; its scale is unknown and `BATTERY_PACK_WH_CAP` stays.
+- *The inverter's own cost.* On the pack at the night's 200-450 W the
+  output meters read 75-80 % of V x A out of the battery: a fixed 50-100 W
+  plus 10-15 %. At float the pack shows "2 A out" for hours with the
+  charger idle -- the inverter's DC-side draw off the battery terminal
+  while the SCC tracks the bus, or a sensor offset; ~110 W either way.
+- *The Inverter In meter is the wrong instrument.* At night in bypass it
+  reads 30-40 % under out_1 + out_2 with an apparent power factor of
+  0.31; a bypassing inverter cannot take fewer real watts than it puts
+  out. Clamp meters mis-read distorted current. Not usable for the
+  standby draw; the two Breaker-type output meters are good.
+
+So the 5 kWh label loses ~30 % of its scale under a floor nobody has
+crossed, 20-25 % of what does leave the pack to the inverter at light
+loads, and the owner's sense of it to a number that counts down on its
+own. Whether the cells hold 5 or 4 or 3 kWh the inverter cannot say.
+
+**Not settled, and the tests that would** (details in `_labs/README.md`):
+T1, a hold night on SUB to 07:00 -- the next morning's refill says
+whether the slid points were energy (~1.1 kWh in) or the number (a few
+hundred Wh). T2, a full-drain night at floor 0 with the grid as the
+net -- V x A out from full to the 46.0 V switch is the backup figure at
+this inverter's losses, and the voltage curve below 29 % the 20/30 floor
+step waits for. T3, the Pace BMS once the extender puts it in range --
+full-charge vs design capacity, cycle count, per-cell voltages, current
+at 10 mA at rest; `probe.py`'s UDP 58899 sweep first, since an Eybond
+logger on the BMS would ride the same redirect and framing. Both config
+nights are the owner's call; nothing was changed tonight.
+
 ## Next entry goes here

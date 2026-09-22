@@ -44,6 +44,14 @@ against the unit. What follows is measured unless it says otherwise.
   less, never more. `BATTERY_SOLD_WH` is only for the reports' comparison
   line. A bigger measured pack raises the cap; do not raise it on the
   SOC scale alone.
+- **The inverter's SOC is an estimate with a clock in it** (2026-09-22,
+  `_labs/`): it slides ~2 points/hour at rest at every level -- even
+  while the sensor shows 1 A going in, and while the pack sits at 57.6 V
+  float -- and it clamps at 100. Charge side 44 Wh/point in, discharge
+  side ~54 out, which no counter does. The pack itself takes 2.7-3.1 kWh
+  every morning from the 30-40 % state to a real full, so it holds at
+  least ~2.5 kWh above that state; below it is unmeasured. Never treat a
+  SOC slide as a drain, and never size the pack from the SOC scale.
 - Output source priority is **2, SBU** (Solar-Battery-Utility; `QPIRI`
   field 17 -- an earlier note said 1, wrong), so the house runs from the
   battery overnight **with the grid present** (seen 2026-09-20: mode B, 9 A
@@ -265,6 +273,7 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 | `src/clock.py` | SNTP client and clock encoding. Doctested. |
 | `src/arbiter.py` | Named-mutex link arbitration and the no-spin idle wait. |
 | `src/netutil.py` | LAN address / broadcast / firewall helpers. |
+| `_labs/` | The battery investigation (Oracle #29): spikes and dated evidence, Switch-X's convention. `pack_audit.py` reads the logs and Switch-X's meters, opens no link. Its README carries the verdicts so far and the tests (T1 hold night, T2 full-drain night, T3 the Pace BMS). May be deleted without warning; what it proves goes to FINDINGS. |
 
 ## Conventions
 
