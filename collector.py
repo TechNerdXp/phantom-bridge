@@ -28,6 +28,7 @@ Cost and contention, deliberately:
 from __future__ import annotations
 
 import argparse
+import traceback
 import datetime as dt
 import pathlib
 import sys
@@ -107,7 +108,10 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
                     dongle = answered[0]
         return idle.wait(interval)
 
-    while not idle.stopped:
+    def _one_cycle() -> bool:
+        """One pass of the loop. False means stop."""
+        nonlocal lent, last_energy, history_pulled_for, on_battery_since
+        nonlocal last_clock_sync, failures
         # A handover is a loan, not a shutdown: drop the session, give the
         # cloud endpoint back so the Android app has something to read, and
         # take the link again when the timer runs out.
@@ -121,8 +125,8 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
                 bridge.restore(dongle, announce=lambda *a: None)
                 lent = True
             if not idle.wait(min(15.0, remaining)):
-                break
-            continue
+                return False
+            return True
 
         if lent:
             log({"event": "handover-end"})
@@ -138,16 +142,16 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
             snap = bridge.snapshot(conn, log, qpiri=qpiri)
         except linkmod.LinkError as exc:
             if not failed_cycle(str(exc)):
-                break
-            continue
+                return False
+            return True
         if not snap["flow"]:
             # Every core read failed. bridge.read() swallows LinkError into
             # the record, so this is what a dead session looks like from here.
             problem = ((snap["records"].get("QPIGS") or {}).get("error")
                        or "no QPIGS data")
             if not failed_cycle(problem):
-                break
-            continue
+                return False
+            return True
         if failures:
             log({"event": "poll-recovered", "after_failures": failures})
         failures = 0
@@ -209,7 +213,27 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
         cadence = (config.BATTERY_POLL_INTERVAL
                    if analysis.get("on_battery") else interval)
         if not idle.wait(cadence):
-            break
+            return False
+
+        return True
+
+    log({"event": "collector-start", "dongle": dongle, "interval": interval})
+    while not idle.stopped:
+        try:
+            if not _one_cycle():
+                break
+        except Exception as exc:              # noqa: BLE001 -- never the loop
+            # 2026-09-22: the loop died silently at 01:23 (and at 14:28 the
+            # day before) -- no poll-failed, no relink, the dongle closed the
+            # idle session 34 s later, and the process sat alive for 45 min
+            # publishing nothing. The worker is a daemon thread, so an
+            # unhandled exception took the loop and left no trace. Now it
+            # is logged and counted, and the loop goes on.
+            log({"event": "cycle-error", "error": repr(exc),
+                 "trace": traceback.format_exc()[-1500:]})
+            if not failed_cycle(f"cycle-error {exc!r}"):
+                break
+    log({"event": "collector-stop"})
 
 
 def main() -> int:

@@ -487,4 +487,70 @@ link while the collector holds it -- the dongle keeps one session and
 the collector's listener has the port -- so a hand write means stopping
 the collector, writing, and starting it again.
 
+### 2026-09-22 -- the pack is counted as 2 kWh, not the 4.8 the SOC implies
+
+The owner: the pack was sold as 5 kWh and gives about 2 kWh in practice.
+The autopilot's profile had read the pack from the on-battery episodes
+(Wh drawn per SOC point) and got **4768 Wh per 100 % over 5 episodes**
+-- the sold figure, near enough, because the inverter's voltage-derived
+SOC is on the sold scale, not the delivered one. At 38 % that made
+381 Wh "above the floor" and a release at 06:22; at 2 kWh it is 160 Wh
+and no release tonight. So the derived figure is now capped at
+`BATTERY_PACK_WH_CAP = 2000` (the data may say less, never more), the
+profile note says both numbers, and the reports compare the implied
+figure with `BATTERY_SOLD_WH`. The proper measurement is Oracle #29.
+
+Same day, for Switch-X (which reads `policy` in `state.json`): a release
+margin of 300 Wh with `headroom_wh` published; a request file
+(`logs/request.json`) the Governor honours as phase `requested`, capped
+at 60 minutes, never past the floor, ignored with the grid absent; and
+the payload keys declared a contract. Measured cadence of `state.json`
+from today's log, 3317 cycles: median 3.1 s, p90 7.1 s, p99 10.2 s; nine
+gaps over 12 s, the longest 32 s (the energy back-fill at session start,
+a POP write with its readback, and the QPIRI verify all sit inside one
+cycle). A reader that calls it stale at 30 s will see a false stale a few
+times a day; 60 s is the honest threshold, and the tray uses 120 s.
+
+The menu-99 timer on the panel is **not cleared** (the owner left it as a
+backup; `config.local.py` reads QPIRI every 60 s so the collector
+re-asserts within a minute plus the dwell). Its 02:00 SBU and the plan
+disagree most nights -- tonight's release is later than that at any SOC
+under 80 -- so clearing it is the owner's next panel job, filed in
+Oracle.
+
+### 2026-09-22 -- the 45-minute hole was a dead loop, not a dead link
+
+Switch-X reported no `state.json` from 01:23 to 02:08 with the collector
+alive. The log agrees and says more: the last poll was at **01:23:04**,
+the `disconnect` came at **01:23:38** -- 34 s of silence first, which is
+the dongle closing a session nobody was talking on -- and then nothing
+at all until a fresh session at 02:08:26 with the start-up sequence
+(dialect confirm, clock sync). Yesterday's 14:28-14:45 hole has the same
+shape. Every other disconnect this week was followed by `poll-failed`
+within seconds and a `relink` at the sixth, so the relink path works;
+it cannot fire from a loop that is no longer running. The poll loop is a
+daemon thread; an unhandled exception in it killed the thread with a
+traceback to a console the frozen exe does not have, and the main thread
+sat parked, alive, publishing nothing.
+
+What raised it is not in the log, because nothing caught it. The one
+thing new on 2026-09-21/22 is a second reader of `state.json`
+(Switch-X), and the publish is a rename over the open target, which on
+Windows raises `PermissionError` while a reader holds it. Unproven, but
+it is the only candidate that arrived with the symptom. Fixed on both
+sides: the loop now catches anything, logs `cycle-error` with the trace,
+counts it as a failed cycle (so the relink still fires) and carries on;
+the rename retries three times and then skips that cycle's publish. The
+collector also logs `collector-start` and `collector-stop`, so a hole
+with neither is a dead process and a hole with a start after it is a
+restart.
+
+The 03:13-03:46 connects with no disconnect rows are **restarts by
+hand**: the commits at 03:14, 03:19, 03:31 and 03:43 are that session
+rebuilding and restarting the exe (and stopping it for the 03:41 hand
+write). A `Stop-Process` logs nothing, which is what the new stop event
+is for. 04:44 was this session's rebuild. The link did not drop on its
+own tonight; the DHCP reservation stays the fix for the other failure
+(the dongle moving), not this one.
+
 ## Next entry goes here

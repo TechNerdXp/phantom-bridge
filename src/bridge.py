@@ -553,7 +553,20 @@ def write_state(snap: dict, source: str = "collector", today: dict | None = None
     }
     tmp = STATE_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(STATE_PATH)
+    # On Windows the rename fails with PermissionError while another
+    # process (the tray, Switch-X, a CLI) has the target open. Three quick
+    # tries, then this cycle's publish is skipped; the next one is seconds
+    # away. Never let this take the poll loop down.
+    for attempt in range(3):
+        try:
+            tmp.replace(STATE_PATH)
+            return
+        except PermissionError:
+            time.sleep(0.05 * (attempt + 1))
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
 
 
 def read_state(max_age_s: float = 120.0) -> dict | None:
@@ -613,6 +626,44 @@ def handover_remaining() -> float:
 def cancel_handover() -> None:
     try:
         HANDOVER_PATH.unlink()
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# request -- an outside ask for SUB or SBU until a time of day
+# --------------------------------------------------------------------------
+#
+# Switch-X (or `ctl.py request`) writes one small file; the collector's
+# autopilot reads it every cycle and policy.parse_request decides whether it
+# is a live ask. Removing the file ends the hold. The acknowledgement is the
+# published policy: phase "requested", `until`, and `current` reading the
+# setting once QPIRI has confirmed it.
+
+REQUEST_PATH = LOG_DIR / "request.json"
+
+
+def write_request(want: str, until: str, why: str = "") -> None:
+    LOG_DIR.mkdir(exist_ok=True)
+    tmp = REQUEST_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"want": want, "until": until, "why": why,
+                               "written": now_site().isoformat(timespec="seconds")}),
+                   encoding="utf-8")
+    tmp.replace(REQUEST_PATH)
+
+
+def read_request() -> dict | None:
+    """The request file's payload, or None if absent or unreadable."""
+    try:
+        payload = json.loads(REQUEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def cancel_request() -> None:
+    try:
+        REQUEST_PATH.unlink()
     except OSError:
         pass
 
