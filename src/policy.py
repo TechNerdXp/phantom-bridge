@@ -9,17 +9,39 @@ The owner's rule (2026-09-22), which this replaces the inverter's own timer
     an outage will need. If the grid drops, the inverter uses the pack
     regardless; the setting only says who carries the house while the
     grid is there.
-  * Later in the night, work out how long what is left above the floor
-    would carry the load at the hours ahead, and release the pack (SBU) at
-    the moment that drains it to the floor just as the sun starts lifting
-    it -- yesterday's lowest-SOC time. Eleven, two, three: whatever the
-    load makes it, recomputed every cycle, so an outage that spent some of
-    the reserve pushes the release later on its own -- but never past the
-    latest release time (config AUTO_RELEASE_LATEST, 02:00). At that clock
-    the pack is released whatever the arithmetic says and runs down to
-    the floor: the floor is the reserve, and a pack held above it all
-    night gave nothing (the first night, 2026-09-22: held at 40 %, the
-    idle SOC slid to 34 % by dawn for nothing).
+  * The evening belongs to the reserve. For AUTO_EVENING_RESERVE_H after
+    dusk the pack is not spent on the house however full it is: the
+    outages cluster in those hours and the heavy motors run then.
+  * After that, spending the pack beats letting it sit -- the number
+    slides either way, so it may as well slide carrying the house. Release
+    (SBU) at the moment that LANDS the pack on the floor exactly at the
+    turnaround: nothing left over, nothing short (owner, 2026-09-23).
+  * And if the load would eat into the morning, stop: hand the house back
+    to the grid with the night's planned spend done. That is the floor
+    rule in-night, and the stand-down when a trim says to spend less.
+
+    The night is settled in SOC POINTS, not watt-hours. Points because the
+    pack's Wh scale is the one figure nobody has (Oracle #29): pack_wh sits
+    pinned at the 2000 Wh cap, 20 Wh a point, while the logs measure 48-55
+    Wh a point out, so the watt-hour chain thought the pack 2.5x emptier
+    than it is and held the release hours too late (2026-09-23: it wanted
+    06:10 where the points say 04:10). Points per kWh of house load is
+    measured straight off LAST NIGHT's episodes -- "last night is our
+    light", the same reading the turnaround and the dusk get -- and folds
+    the inverter's own losses in with it.
+
+    Every night's landing then patches the next: the miss against the floor
+    is carried as a trim, in points, half of it per night and clamped.
+    Points left unspent widen tomorrow's window at the FRONT (release
+    earlier); a landing under the floor shortens it at the BACK (stand down
+    before dawn), so the correction never eats the evening reserve. The
+    patch is sized by the load at the hours it moves, never by the clock:
+    an hour at 600 W costs three times an hour at 200 W.
+
+    AUTO_RELEASE_LATEST is a BACKSTOP, not a ceiling: with an SOC to read
+    the landing rule decides, and the clock only applies when there is no
+    SOC at all. It was the rule while the night was settled in watt-hours
+    and the arithmetic could not be trusted to let go.
   * At the floor, at any hour, SUB: the grid carries the house and the
     pack sits until the turnaround, and then until the sun has lifted it
     back over the resume level. Then SBU, the day's setting.
@@ -57,6 +79,19 @@ MORNING = (3 * 60, 12 * 60)
 
 # The release time is searched in steps of this many minutes.
 STEP_MIN = 5
+
+# What counts as an episode worth reading the drain rate from: long enough
+# to average out, deep enough that the SOC's whole-point steps are not the
+# signal, and not starting at the top of the scale, where the number falls
+# far faster than the pack does (97 -> 84 in 34 minutes, 2026-09-20) because
+# it is clamped at 100 and has nowhere to sit.
+MIN_EPISODE_S = 20 * 60
+MIN_DROP_POINTS = 3
+TOP_OF_SCALE = 90
+
+# An outage this long spent the pack for reasons of its own, so that night's
+# landing says nothing about the plan and is not carried into the trim.
+OUTAGE_SPOILS_S = 30 * 60
 
 # Nominal 48 V LiFePO4 bus, for BATTERY_CAPACITY_AH -> Wh.
 NOMINAL_V = 51.2
@@ -102,6 +137,7 @@ class Profile:
     pack_wh: float                   # what 100 % of the SOC is worth
     efficiency: float                # load Wh per battery Wh
     hourly_load_w: list              # 24 entries, watts
+    points_per_kwh: float = 0.0      # SOC points spent per kWh the house draws
     days: int = 0                    # finished days it was read from
     notes: dict = field(default_factory=dict)   # where each figure came from
     built_for: dt.date | None = None            # the day it was built on
@@ -110,10 +146,16 @@ class Profile:
         return {"turnaround": fmt_hm(self.turnaround_min),
                 "dusk": fmt_hm(self.dusk_min),
                 "pack_wh": round(self.pack_wh),
+                "points_per_kwh": round(self.points_per_kwh, 2),
                 "efficiency": round(self.efficiency, 3),
                 "hourly_load_w": [round(w) for w in self.hourly_load_w],
                 "days": self.days, "notes": dict(self.notes),
                 "built_for": self.built_for.isoformat() if self.built_for else None}
+
+
+def _in_window(minute, turnaround: int, dusk: int) -> bool:
+    """Is that time of day inside the sun's window?"""
+    return minute is not None and turnaround <= minute < dusk
 
 
 def build_profile(days: list, *, default_turnaround: str = "07:00",
@@ -122,7 +164,8 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
                   capacity_ah: float | None = None,
                   fallback_pack_wh: float = 2000.0,
                   pack_cap_wh: float | None = None,
-                  fallback_efficiency: float = 0.88) -> Profile:
+                  fallback_efficiency: float = 0.88,
+                  fallback_points_per_kwh: float = 19.0) -> Profile:
     """Read the figures out of day analyses, most recent first.
 
     Each entry is what insights.analyse_day returns for one finished day.
@@ -251,8 +294,33 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     if missing:
         notes["hourly_load"] = "%d hours filled with %.0f W" % (len(missing), fill)
 
+    # -- the rate: SOC points the pack gives up per kWh the house draws.
+    # This is the currency the release is settled in, and the reason it is
+    # not watt-hours: the pack's Wh scale is the one figure nobody has
+    # (Oracle #29), while points per kWh is measured directly and folds the
+    # inverter's own losses in with it. LAST NIGHT is the light -- the same
+    # "just like yesterday" the turnaround and the dusk are read with -- so
+    # the most recent night with usable episodes wins outright, not a
+    # blend across the week.
+    points = None
+    for d in days:
+        seen = [e["soc_drop"] / (e["load_wh"] / 1000.0)
+                for e in (d.get("episodes") or [])
+                if (e.get("soc_drop") or 0) >= MIN_DROP_POINTS
+                and (e.get("load_wh") or 0) > 0
+                and (e.get("duration_s") or 0) >= MIN_EPISODE_S
+                and (e.get("soc_start") or 0) <= TOP_OF_SCALE
+                and not _in_window(parse_hm(e.get("start")), turnaround, dusk)]
+        if seen:
+            points = statistics.median(seen)
+            notes["points_per_kwh"] = "%d night episode(s) on %s" % (len(seen), d.get("date"))
+            break
+    if points is None:
+        points = float(fallback_points_per_kwh)
+        notes["points_per_kwh"] = "fallback"
+
     return Profile(int(turnaround), int(dusk), pack, efficiency, hourly,
-                   days=len(days), notes=notes)
+                   points_per_kwh=float(points), days=len(days), notes=notes)
 
 
 # --------------------------------------------------------------------------
@@ -293,6 +361,99 @@ def usable_wh(profile: Profile, soc, floor: float) -> float:
     if soc is None:
         return 0.0
     return max(0.0, float(soc) - floor) / 100.0 * profile.pack_wh
+
+
+# --------------------------------------------------------------------------
+# the same arithmetic in SOC points -- the currency the plan is settled in
+# --------------------------------------------------------------------------
+#
+# The owner's rule, 2026-09-23: aim to LAND on the floor exactly at the
+# turnaround, nothing left over and nothing short. Points, not watt-hours,
+# because the pack's Wh scale is the one number nobody has (Oracle #29) and
+# the watt-hour chain gets it wrong in both directions at once -- pack_wh is
+# pinned at the 2000 Wh cap (20 Wh a point) while the logs measure 48-55 Wh
+# a point out, so it thinks the pack is 2.5x emptier than it is and holds
+# the release hours too late. Points per kWh is measured straight off last
+# night and folds the inverter's losses in with it.
+#
+#   cost    the points the house will spend over a span
+#   budget  the points there are to spend: soc - floor, plus any trim
+#   window  release -> stand-down; normally stand-down IS the turnaround
+#   trim    yesterday's landing miss, carried (see trim_step)
+
+def cost_points(profile: Profile, start: dt.datetime, end: dt.datetime) -> float:
+    """SOC points the house is expected to spend between two moments.
+
+    >>> prof = build_profile([_fake_day("2026-09-21")])
+    >>> round(prof.points_per_kwh, 1)                       # 21 points / 0.9 kWh
+    23.3
+    >>> t0 = dt.datetime(2026, 9, 22, 23, 30)
+    >>> round(cost_points(prof, t0, t0 + dt.timedelta(hours=1)), 1)   # 125+150 Wh
+    6.4
+    >>> cost_points(prof, t0, t0)
+    0.0
+    """
+    if end <= start:
+        return 0.0
+    total = 0.0
+    t = start
+    while t < end:
+        edge = (t.replace(minute=0, second=0, microsecond=0)
+                + dt.timedelta(hours=1))
+        stop = min(edge, end)
+        total += profile.hourly_load_w[t.hour] * (stop - t).total_seconds() / 3600.0
+        t = stop
+    return total / 1000.0 * profile.points_per_kwh
+
+
+def budget_points(soc, floor: float, trim: float = 0.0) -> float:
+    """The points there are to spend. A positive trim widens the window at
+    the front -- yesterday landed above the floor, so start earlier; a
+    negative one is spent at the back instead, by stand_down_at.
+
+    >>> budget_points(64, 30), budget_points(64, 30, trim=6)
+    (34.0, 40.0)
+    >>> budget_points(20, 30), budget_points(None, 30)
+    (0.0, 0.0)
+    """
+    if soc is None:
+        return 0.0
+    return max(0.0, float(soc) - floor) + max(0.0, trim)
+
+
+def stand_down_at(profile: Profile, turnaround: dt.datetime,
+                  trim: float = 0.0) -> dt.datetime:
+    """When the pack hands the house back, which is the turnaround unless a
+    negative trim shortens the window at the back -- yesterday landed under
+    the floor, so stop short of dawn by that many points. Walked back
+    through the load, not the clock: an hour at 600 W costs three times an
+    hour at 200 W, so the patch is sized by what those hours actually draw.
+
+    >>> prof = build_profile([_fake_day("2026-09-21")])
+    >>> t = dt.datetime(2026, 9, 23, 7, 14)
+    >>> stand_down_at(prof, t).strftime("%H:%M")            # no trim, no change
+    '07:14'
+    >>> stand_down_at(prof, t, trim=-6).strftime("%H:%M")   # 6 points off the end
+    '06:54'
+    >>> stand_down_at(prof, t, trim=+6).strftime("%H:%M")   # a widening goes up front
+    '07:14'
+
+    The same six points, sized by the load at the hours being given back:
+    twenty minutes of a 1 kW dawn, two and a half hours of a 100 W night::
+
+        >>> stand_down_at(prof, dt.datetime(2026, 9, 23, 6, 0),
+        ...               trim=-6).strftime("%H:%M")
+        '03:25'
+    """
+    owed = -min(0.0, trim)
+    if owed <= 0:
+        return turnaround
+    t = turnaround
+    while owed > 0 and turnaround - t < dt.timedelta(hours=12):
+        step = t - dt.timedelta(minutes=STEP_MIN)
+        owed -= cost_points(profile, step, t)
+        t = step
+    return t
 
 
 def next_turnaround(profile: Profile, now: dt.datetime) -> dt.datetime:
@@ -386,6 +547,83 @@ def release_time(profile: Profile, now: dt.datetime, soc, floor: float,
     return target
 
 
+def release_at_points(profile: Profile, now: dt.datetime, soc, floor: float,
+                      trim: float = 0.0, margin_points: float = 0.0,
+                      end: dt.datetime | None = None) -> dt.datetime | None:
+    """When to hand the house to the pack so it LANDS on the floor exactly
+    at the end of the window -- the owner's rule of 2026-09-23, settled in
+    SOC points.
+
+    The first moment from now whose cost to the end of the window fits the
+    budget. `now` itself when it already fits, meaning the pack cannot be
+    spent in time and should start at once; None when there is nothing
+    above the floor to spend.
+
+    >>> prof = build_profile([_fake_day("2026-09-21")])
+    >>> now = dt.datetime(2026, 9, 22, 20, 0)
+    >>> release_at_points(prof, now, 80, 30).strftime("%H:%M")
+    '22:45'
+    >>> release_at_points(prof, now, 100, 30).strftime("%H:%M")   # more to spend
+    '21:00'
+    >>> release_at_points(prof, now, 30, 30) is None              # nothing above it
+    True
+
+    A trim from yesterday's landing widens the window at the front::
+
+        >>> release_at_points(prof, now, 80, 30, trim=+8).strftime("%H:%M")
+        '22:00'
+
+    A negative one is not spent here -- it comes off the back, in
+    stand_down_at, so the release itself does not move::
+
+        >>> release_at_points(prof, now, 80, 30, trim=-8).strftime("%H:%M")
+        '22:45'
+    """
+    budget = budget_points(soc, floor, trim) - max(0.0, margin_points)
+    if budget <= 0:
+        return None
+    target = end or next_turnaround(profile, now)
+    t = now
+    while t < target:
+        if cost_points(profile, t, target) <= budget:
+            return t
+        t += dt.timedelta(minutes=STEP_MIN)
+    return target
+
+
+def trim_step(day: dict, floor: float, gain: float = 0.5) -> float | None:
+    """What a finished night's landing says to carry into the next one.
+
+    The miss is the SOC at the turnaround against the floor we aimed at:
+    landed above it and there were points left unspent, so widen the window
+    (positive); landed under it and it was spent too fast, so shorten it
+    (negative). Half the miss by default, so one odd night cannot swing the
+    plan. None when the day cannot say -- no dawn low, or an outage spent
+    the pack for reasons of its own.
+
+    >>> trim_step({"soc_min": 36, "soc_min_at": "07:14"}, 30)
+    3.0
+    >>> trim_step({"soc_min": 26, "soc_min_at": "07:14"}, 30)
+    -2.0
+    >>> trim_step({"soc_min": 30, "soc_min_at": "07:14"}, 30)
+    0.0
+    >>> trim_step({"soc_min": 36, "soc_min_at": "21:00"}, 30) is None     # not a dawn low
+    True
+    >>> trim_step({"soc_min": 12, "soc_min_at": "07:14", "outage_s": 9000}, 30) is None
+    True
+    >>> trim_step({}, 30) is None
+    True
+    """
+    if not day or day.get("soc_min") is None:
+        return None
+    at = parse_hm(day.get("soc_min_at"))
+    if at is None or not (MORNING[0] <= at < MORNING[1]):
+        return None
+    if (day.get("outage_s") or 0) >= OUTAGE_SPOILS_S:
+        return None
+    return round((float(day["soc_min"]) - float(floor)) * gain, 2)
+
+
 # --------------------------------------------------------------------------
 # the governor -- the rule, with its two pieces of memory
 # --------------------------------------------------------------------------
@@ -455,6 +693,11 @@ class Decision:
     release_at: dt.datetime | None = None
     need_wh: float = 0.0
     usable_wh: float = 0.0
+    trim: float = 0.0                  # points carried from last night's landing
+    budget: float = 0.0                # points there are to spend
+    cost: float = 0.0                  # points the rest of the window will take
+    stand_down: dt.datetime | None = None   # the window's back edge, if pulled in
+    rate: float = 0.0                  # the profile's points per kWh, for the Wh views
     floor_hold: bool = False
     in_window: bool = False
     turnaround_at: dt.datetime | None = None
@@ -470,6 +713,8 @@ class Decision:
         """What is above the floor beyond the expected draw to the
         turnaround: the watt-hours an outside caller may spend on the pack
         without pushing the plan to the floor early."""
+        if self.rate > 0:
+            return max(0.0, self.budget - self.cost) / self.rate * 1000.0
         return max(0.0, self.usable_wh - self.need_wh)
 
 
@@ -488,7 +733,7 @@ class Governor:
     ('SBU', 'day')
     >>> d = gov.decide(prof, dt.datetime(2026, 9, 22, 18, 0), 85)
     >>> d.name, d.phase, d.release_at.strftime("%H:%M")
-    ('SUB', 'hold', '22:15')
+    ('SUB', 'hold', '22:20')
     >>> d = gov.decide(prof, dt.datetime(2026, 9, 22, 23, 30), 85)
     >>> d.name, d.phase
     ('SBU', 'night')
@@ -532,16 +777,44 @@ class Governor:
     to the floor, exactly as the panel's timer did:
 
     >>> gov4 = Governor(floor=30, resume=35, margin_wh=300, latest_release="02:00")
-    >>> d = gov4.decide(prof, dt.datetime(2026, 9, 22, 23, 0), 40)
-    >>> d.phase, d.release_at.strftime("%H:%M")
-    ('hold', '02:00')
-    >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 2, 0), 40).phase
+    >>> gov4.decide(prof, dt.datetime(2026, 9, 22, 23, 0), 40).phase
+    'hold'
+    >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 2, 0), 40).phase     # still holding
+    'hold'
+    >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 2, 0), None).phase   # blind: the clock
     'night'
     >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 4, 0), 30).phase      # the floor
     'floor'
     >>> gov5 = Governor(floor=30, resume=35, latest_release="02:00")
     >>> gov5.decide(prof, dt.datetime(2026, 9, 22, 23, 30), 85).phase   # earlier still
     'night'
+
+    Last night's landing is carried as a trim, in SOC points. Left points
+    unspent and the window widens at the front, so the release walks
+    earlier; went under the floor and it shortens at the back instead, and
+    the pack stands down before the sun:
+
+    >>> gov6 = Governor(floor=30, resume=35, trim=+8)
+    >>> gov6.decide(prof, dt.datetime(2026, 9, 22, 20, 0), 80).release_at.strftime("%H:%M")
+    '22:00'
+    >>> gov7 = Governor(floor=30, resume=35, trim=-8)
+    >>> d = gov7.decide(prof, dt.datetime(2026, 9, 22, 20, 0), 80)
+    >>> d.release_at.strftime("%H:%M"), d.stand_down.strftime("%H:%M")
+    ('22:45', '06:34')
+    >>> gov7.decide(prof, dt.datetime(2026, 9, 22, 23, 0), 78).phase
+    'night'
+    >>> gov7.decide(prof, dt.datetime(2026, 9, 23, 6, 45), 40).phase
+    'stand-down'
+
+    And the evening belongs to the reserve whatever the pack holds -- a
+    light winter night would otherwise release at dusk, into the hours the
+    outages and the motors are in:
+
+    >>> gov8 = Governor(floor=30, resume=35, evening_reserve_h=4)
+    >>> gov8.decide(prof, dt.datetime(2026, 9, 22, 18, 0), 100).phase
+    'hold'
+    >>> gov8.decide(prof, dt.datetime(2026, 9, 22, 18, 0), 100).release_at.strftime("%H:%M")
+    '21:00'
 
     The margin holds the release back until the bursts fit too:
 
@@ -555,10 +828,16 @@ class Governor:
 
     def __init__(self, floor: float = 30, resume: float = 35,
                  margin_wh: float = 0.0, request_max_min: float = 60,
-                 latest_release: str | None = None):
+                 latest_release: str | None = None, trim: float = 0.0,
+                 evening_reserve_h: float = 0.0):
         self.floor = float(floor)
         self.resume = max(float(resume), self.floor)
         self.margin_wh = max(0.0, float(margin_wh))
+        self.trim = float(trim)          # set daily from the last landing
+        # The evening belongs to the reserve: outages cluster after dusk and
+        # the motors run then, so the pack is not spent on the house no
+        # matter how full it is (owner, 2026-09-23).
+        self.evening_reserve = dt.timedelta(hours=max(0.0, float(evening_reserve_h)))
         self.latest_min = parse_hm(latest_release)
         self.request_max = dt.timedelta(minutes=max(1.0, float(request_max_min)))
         self.floor_hold = False
@@ -640,25 +919,68 @@ class Governor:
                 % (fmt_hm(profile.turnaround_min), fmt_hm(profile.dusk_min), note),
                 in_window=True, turnaround_at=target, usable_wh=usable, request=asked)
 
+        # -- the night, settled in SOC points: land on the floor at the end
+        # of the window, nothing left over and nothing short.
         night = night_of(profile, now)
         latest = latest_release_at(profile, now, self.latest_min)
-        fits = soc is not None and need + self.margin_wh <= usable
-        overdue = soc is not None and latest is not None and now >= latest
+        end = stand_down_at(profile, target, self.trim)
+        # the evening reserve: the earliest the pack may be spent tonight
+        guard = dt.datetime.combine(night, dt.time()) + dt.timedelta(
+            minutes=profile.dusk_min) + self.evening_reserve
+        # one knob, in watt-hours, because that is what Switch-X spends;
+        # priced into points at the rate last night measured
+        margin_points = self.margin_wh / 1000.0 * profile.points_per_kwh
+        # the whole budget is what the pack holds above the floor; the
+        # release may only commit what is left after the margin, and the
+        # difference is what gets published as headroom
+        whole = budget_points(soc, self.floor, self.trim)
+        budget = whole - margin_points
+        # The release is always worked out to the turnaround: a negative
+        # trim must make the night spend LESS, not spend the same over a
+        # window shifted earlier, so it is taken off the back by the
+        # stand-down and never off the front.
+        cost = cost_points(profile, now, target)
+        fits = soc is not None and cost <= budget and now >= guard
+        # The latest-release clock is a BACKSTOP now, not a ceiling (2026-09-23).
+        # It was the rule while the night was settled in watt-hours and the
+        # arithmetic could not be trusted to let go; the landing rule aims at
+        # the floor directly, and forcing a release at the clock would spend
+        # past it -- "nothing less, nothing more". So it only applies with no
+        # SOC to compute from, which is the one case the arithmetic is blind.
+        blind = soc is None
+        overdue = blind and latest is not None and now >= latest
+        spent = dict(trim=self.trim, budget=whole, cost=cost,
+                     rate=profile.points_per_kwh,
+                     stand_down=end if end < target else None,
+                     need_wh=need, usable_wh=usable, turnaround_at=target,
+                     request=asked)
+
         if self.released_night == night or fits or overdue:
             self.released_night = night
+            if now >= end and end < target:
+                # the back edge of the window: yesterday landed under the
+                # floor, so this night stops short of dawn by that much
+                return Decision(
+                    SUB, "stand-down",
+                    "stood down at %s - %.0f points short of the floor last "
+                    "night, so the pack hands back before the sun%s"
+                    % (end.strftime("%H:%M"), -self.trim, note),
+                    release_at=None, **spent)
             return Decision(
                 SBU, "night",
                 "reserve released - the pack carries the house to the sun (~%s)%s%s"
                 % (fmt_hm(profile.turnaround_min),
                    " - past the latest release %s" % latest.strftime("%H:%M")
                    if overdue and not fits else "", note),
-                release_at=now, need_wh=need, usable_wh=usable, turnaround_at=target,
-                request=asked)
+                release_at=now, **spent)
 
-        release = release_time(profile, now, soc, self.floor, self.margin_wh)
+        release = release_at_points(profile, now, soc, self.floor, self.trim,
+                                    margin_points, target)
+        if release is not None and release < guard:
+            release = guard                    # not in the evening reserve
         if release is None or release >= target:
             release = None
-        at_latest = (latest is not None and latest < target
+        at_latest = (blind and latest is not None and latest < target
                      and (release is None or latest < release))
         if at_latest:
             release = latest
@@ -668,8 +990,7 @@ class Governor:
         else:
             why = ("holding the reserve for an outage - release to the pack ~%s%s"
                    % (release.strftime("%H:%M"), " (the latest)" if at_latest else ""))
-        return Decision(SUB, "hold", why + note, release_at=release, need_wh=need,
-                        usable_wh=usable, turnaround_at=target, request=asked)
+        return Decision(SUB, "hold", why + note, release_at=release, **spent)
 
 
 def headline(payload: dict | None) -> str | None:

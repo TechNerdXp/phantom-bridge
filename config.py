@@ -296,6 +296,41 @@ AUTO_FALLBACK_PACK_WH = 2000
 # bursts on this pack.
 AUTO_RELEASE_MARGIN_WH = 300
 
+# The night is settled in SOC POINTS, not watt-hours (the owner's rule,
+# 2026-09-23): aim to LAND on the floor exactly at the turnaround, nothing
+# left over and nothing short. Points because the pack's Wh scale is the one
+# figure nobody has (Oracle #29) -- pack_wh sits pinned at the 2000 Wh cap,
+# 20 Wh a point, while the logs measure 48-55 Wh a point out, so the
+# watt-hour chain thinks the pack is 2.5x emptier than it is and holds the
+# release hours too late. Points per kWh of house load is measured straight
+# off LAST NIGHT's episodes and folds the inverter's losses in with it; this
+# is only the value used until a night has been logged.
+AUTO_POINTS_PER_KWH = 19.0
+
+# The evening belongs to the reserve. For this long after dusk the pack is
+# never spent on the house however full it is: outages cluster in those
+# hours and the heavy motors run then (owner, 2026-09-23). Without it a
+# light winter night would release at dusk, straight into that window.
+AUTO_EVENING_RESERVE_H = 4
+#
+# NOTE, owner 2026-09-23, not implemented and waiting on data: if winter
+# mornings keep landing well above the floor with the trim already saturated
+# against this guard, that is the data asking for the window to reach back
+# towards dusk -- shrink this. It is the hard case (the motors and the
+# outages are real), so it is a judgement to make once the trim log shows
+# the pattern, not a rule to automate now.
+
+# Last night's landing, carried into tonight. The miss is the SOC at the
+# turnaround against the floor we aimed at: landed above it and points went
+# unspent, so widen tonight's window at the FRONT (release earlier); landed
+# under it and shorten at the BACK instead (stand down before dawn, keeping
+# the evening reserve intact). The patch is in points and is converted to
+# clock time through the load, because an hour at 600 W costs three times an
+# hour at 200 W. Half the miss each night, so one odd night cannot swing the
+# plan, and the whole carried figure is clamped.
+AUTO_TRIM_GAIN = 0.5
+AUTO_TRIM_MAX_POINTS = 20
+
 # The pack is never held past this time of night, whatever the arithmetic
 # says: at this clock the reserve is released (SBU) and the pack runs the
 # house down to the floor, however long that takes. The owner's rule of

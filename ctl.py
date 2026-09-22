@@ -410,7 +410,9 @@ def cmd_auto(args, conn, log) -> int:
     gov = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
                           margin_wh=config.AUTO_RELEASE_MARGIN_WH,
                           request_max_min=config.AUTO_REQUEST_MAX_MIN,
-                          latest_release=config.AUTO_RELEASE_LATEST)
+                          latest_release=config.AUTO_RELEASE_LATEST,
+                          evening_reserve_h=config.AUTO_EVENING_RESERVE_H,
+                          trim=float(autopilot.read_trim().get("points") or 0.0))
     request = policy.parse_request(bridge.read_request(), naive)
     grid_present = bool((state.get("flow") or {}).get("grid_present", True))
     decision = gov.decide(prof, naive, soc, request=request, grid_present=grid_present)
@@ -436,6 +438,8 @@ def cmd_auto(args, conn, log) -> int:
     print(f"  turnaround  {policy.fmt_hm(prof.turnaround_min)}   {prof.notes.get('turnaround')}")
     print(f"  dusk        {policy.fmt_hm(prof.dusk_min)}   {prof.notes.get('dusk')}")
     print(f"  pack        {prof.pack_wh:.0f} Wh per 100% SOC   {prof.notes.get('pack_wh')}")
+    print(f"  drain rate  {prof.points_per_kwh:.1f} SOC points per kWh the house draws"
+          f"   {prof.notes.get('points_per_kwh')}")
     print(f"  efficiency  {prof.efficiency:.2f} load Wh per battery Wh   {prof.notes.get('efficiency')}")
     if prof.notes.get("hourly_load"):
         print(f"  hourly load {prof.notes['hourly_load']}")
@@ -447,10 +451,20 @@ def cmd_auto(args, conn, log) -> int:
     print(f"\nNOW      {now.strftime('%H:%M')}   SOC {soc_text}"
           + (f"  (state.json {age}s old)" if age is not None else "  (no state.json)"))
     print(f"  verdict     {decision.name}  [{decision.phase}]  {decision.reason}")
-    if decision.phase in ("hold", "night", "requested") and not decision.in_window:
-        print(f"  need {decision.need_wh:.0f} Wh to the turnaround, "
-              f"{decision.usable_wh:.0f} Wh above the floor, "
+    if decision.phase in ("hold", "night", "requested", "stand-down") and not decision.in_window:
+        print(f"  budget {decision.budget:.1f} points above the floor, "
+              f"{decision.cost:.1f} to the turnaround, "
               f"headroom {decision.headroom_wh:.0f} Wh")
+        trim = autopilot.read_trim()
+        carried = float(trim.get("points") or 0.0)
+        if carried:
+            last = (trim.get("log") or [{}])[-1]
+            print(f"  trim   {carried:+.1f} points carried"
+                  f"  (landed {last.get('landed')}% aiming {last.get('aimed')}%"
+                  f" on {last.get('night')})")
+        if decision.stand_down:
+            print(f"  stand-down at {decision.stand_down.strftime('%H:%M')}, "
+                  f"before the {policy.fmt_hm(prof.turnaround_min)} turnaround")
     if decision.request:
         print(f"  request     {decision.request}")
     if published:
@@ -458,9 +472,11 @@ def cmd_auto(args, conn, log) -> int:
         if published.get("last_write"):
             print(f"  last write  {published['last_write']}")
 
-    print("\nRELEASE TIME BY SOC, from now")
+    print("\nRELEASE TIME BY SOC, from now  (to land on the floor at the turnaround)")
+    margin_points = config.AUTO_RELEASE_MARGIN_WH / 1000.0 * prof.points_per_kwh
     for level in range(100, config.AUTO_SOC_FLOOR, -10):
-        t = policy.release_time(prof, naive, level, config.AUTO_SOC_FLOOR)
+        t = policy.release_at_points(prof, naive, level, config.AUTO_SOC_FLOOR,
+                                     trim=gov.trim, margin_points=margin_points)
         if t is None:
             when = "never"
         elif t <= naive:

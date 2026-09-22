@@ -145,13 +145,34 @@ The rule, in `src/policy.py`:
   best hour, yesterday: **SUB**. The grid carries the house and the pack is
   kept as the reserve an outage will need. If the grid drops, the inverter
   uses the pack regardless.
-- **Night release**: every cycle it works out how many watt-hours the house
-  will draw from now until the turnaround (the hourly load over the last
-  week, over the measured battery-to-load efficiency) and compares it with
-  what the pack holds above the floor. The moment they match it switches to
-  **SBU**, so the pack lands on the floor just as the sun starts lifting it.
-  Eleven, two, three -- the load decides, and an outage that spent some of
-  the reserve pushes the release later on its own.
+- **Evening reserve**: for `AUTO_EVENING_RESERVE_H` (4 h) after dusk the pack
+  is not spent on the house however full it is. The outages cluster in those
+  hours and the heavy motors run then.
+- **Night release**: after that, spending the pack beats letting it sit --
+  the SOC number slides either way, so it may as well slide carrying the
+  house. Every cycle it works out the **SOC points** the house will spend
+  from now to the turnaround and compares them with what the pack holds
+  above the floor. The moment they match it switches to **SBU**, so the pack
+  **lands on the floor exactly at the turnaround: nothing left over, nothing
+  short**. Eleven, two, four -- the load decides, and an outage that spent
+  some of the reserve pushes the release later on its own.
+
+  Points, not watt-hours, because the pack's Wh scale is the one figure
+  nobody has (Oracle #29): `pack_wh` sits pinned at the 2,000 Wh cap, 20 Wh
+  a point, while the logs measure 48-55 Wh a point out. The watt-hour chain
+  therefore thought the pack 2.5x emptier than it is and held the release
+  hours too late. The rate -- `points_per_kwh` of house load -- is measured
+  off **last night's** episodes, the same "just like yesterday" reading the
+  turnaround and the dusk get, and folds the inverter's losses in with it.
+- **Stand-down, and the nightly patch**: if the load would eat into the
+  morning, the pack hands back to the grid with the night's planned spend
+  done. Each landing patches the next night: the miss against the floor is
+  carried as a **trim** in points (half per night, clamped, in
+  `logs/trim.json`). Points left unspent widen tomorrow's window at the
+  *front*; a landing under the floor shortens it at the *back*, so a
+  correction never eats the evening reserve. The patch is sized by the load
+  at the hours it moves -- an hour at 600 W costs three times an hour at
+  200 W -- never by the clock. A night with a real outage is not carried.
 - **Turnaround**: yesterday's lowest-SOC time, when it fell between 03:00 and
   noon -- the minute the sun started pushing the pack up.
 - **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has

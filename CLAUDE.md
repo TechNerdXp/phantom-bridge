@@ -239,17 +239,41 @@ first one will be a `POP` from the autopilot, after the inverter's timer
 7. **Daily production.** From the inverter's own `QED` counter, shown on the
    watch screen with yesterday against the 7-day median; a drop past
    `PV_DROP_WARN_FRACTION` says "check the panels".
-8. **Automatic output priority.** The owner's rule (2026-09-22) in
-   `src/policy.py`, replacing the inverter's timer: SBU through the sun's
-   window; SUB from dusk so the pack stays the outage reserve; SBU again
-   the moment the expected draw to the turnaround fits in what is above
-   the floor, so the pack lands on the floor as the sun starts lifting it;
-   SUB at the floor (30 %) at any hour, until the sun has it past 35 %
-   inside the window. **Never held past `AUTO_RELEASE_LATEST` (02:00)**:
-   at that clock the pack is released whatever the sum says and runs to
-   the floor -- the floor is the reserve (owner, 2026-09-22, after the
-   first night held a 40 % pack on the grid till dawn). The arithmetic
-   can only release earlier than the timer did, never later. Turnaround = yesterday's lowest-SOC time when it
+8. **Automatic output priority.** The owner's rule in `src/policy.py`,
+   replacing the inverter's timer. Two walls and a spend between them
+   (owner, 2026-09-23): the **evening belongs to the reserve** --
+   `AUTO_EVENING_RESERVE_H` (4 h) after dusk the pack is never spent,
+   because the outages cluster there and the motors run; after that
+   **spending beats idling**, since the number slides either way, so
+   release (SBU) at the moment that **lands the pack on the floor exactly
+   at the turnaround, nothing left over and nothing short**; and if the
+   load would eat into the morning, **stand down** -- back to the grid
+   with the night's planned spend done. SBU through the sun's window; SUB
+   at the floor (30 %) at any hour until the sun has it past 35 %.
+
+   **The night is settled in SOC points, not watt-hours** -- the fix of
+   2026-09-23. Points because the pack's Wh scale is the one figure
+   nobody has: `pack_wh` sits pinned at the 2000 Wh cap (20 Wh a point)
+   while the logs measure 48-55 Wh a point out, so the watt-hour chain
+   thought the pack 2.5x emptier than it is and held the release hours
+   too late (it wanted 06:10 where the points said 04:10). The rate is
+   `points_per_kwh`, measured off **last night's** episodes -- "last
+   night is our light", the same reading the turnaround and the dusk get.
+
+   **Every night patches the next.** The landing's miss against the floor
+   is carried as `trim`, in points, half per night, clamped at
+   `AUTO_TRIM_MAX_POINTS`, persisted in `logs/trim.json`. Points left
+   unspent widen tomorrow's window at the FRONT (release earlier); a
+   landing under the floor shortens it at the BACK (stand down before
+   dawn), so a correction never eats the evening reserve. The patch is
+   sized by the load at the hours it moves, never by the clock. A night
+   with an outage over `OUTAGE_SPOILS_S` is not carried -- it spent the
+   pack for its own reasons. **`AUTO_RELEASE_LATEST` is now a backstop,
+   not a ceiling**: it applies only with no SOC to compute from. It was
+   the rule while the night was in watt-hours, and its evidence (the
+   "idle slide wastes a held pack" night) was withdrawn by `_labs` --
+   the full-to-full balance shows the slide is the number, not energy.
+   Turnaround = yesterday's lowest-SOC time when it
    fell between 03:00 and noon; dusk = the end of the last hour at a
    quarter of the best PV hour, yesterday; pack Wh = the SOC-scale median
    the episodes imply; efficiency and the hourly load from the last 7

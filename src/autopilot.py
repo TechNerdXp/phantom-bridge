@@ -21,6 +21,7 @@ tape. Add keys freely; never rename or drop one.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import threading
 import time
 
@@ -52,6 +53,35 @@ SETTLE_S = 300
 BURST_SHARE = 0.25
 
 
+TRIM_PATH = bridge.LOG_DIR / "trim.json"
+
+
+def read_trim() -> dict:
+    """The carried landing correction: {"points": float, "last": "YYYY-MM-DD",
+    "log": [...]}. It outlives restarts because it is a night-to-night
+    memory, not a reading."""
+    try:
+        payload = json.loads(TRIM_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"points": 0.0, "last": None, "log": []}
+    if not isinstance(payload, dict):
+        return {"points": 0.0, "last": None, "log": []}
+    payload.setdefault("points", 0.0)
+    payload.setdefault("last", None)
+    payload.setdefault("log", [])
+    return payload
+
+
+def write_trim(trim: dict) -> None:
+    bridge.LOG_DIR.mkdir(exist_ok=True)
+    tmp = TRIM_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(trim, ensure_ascii=False), encoding="utf-8")
+    try:
+        tmp.replace(TRIM_PATH)
+    except OSError:
+        pass
+
+
 def profile_kwargs() -> dict:
     """config -> policy.build_profile keyword arguments. One place, so the
     collector and `ctl.py auto` cannot read the config differently."""
@@ -65,6 +95,7 @@ def profile_kwargs() -> dict:
         "fallback_pack_wh": config.AUTO_FALLBACK_PACK_WH,
         "pack_cap_wh": config.BATTERY_PACK_WH_CAP,
         "fallback_efficiency": config.AUTO_EFFICIENCY_FALLBACK,
+        "fallback_points_per_kwh": config.AUTO_POINTS_PER_KWH,
     }
 
 
@@ -93,7 +124,10 @@ class Autopilot:
         self.governor = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
                                         margin_wh=config.AUTO_RELEASE_MARGIN_WH,
                                         request_max_min=config.AUTO_REQUEST_MAX_MIN,
-                                        latest_release=config.AUTO_RELEASE_LATEST)
+                                        latest_release=config.AUTO_RELEASE_LATEST,
+                                        evening_reserve_h=config.AUTO_EVENING_RESERVE_H)
+        self.trim = read_trim()
+        self.governor.trim = self.trim.get("points", 0.0)
         self.last_request_key = None
         self.profile: policy.Profile | None = None
         self._building: dt.date | None = None
@@ -122,8 +156,32 @@ class Autopilot:
             self.profile = prof
             self.log({"event": "priority-plan", "seconds": round(time.time() - started, 1),
                       **prof.as_dict()})
+            self._apply_trim(today)
         finally:
             self._building = None
+
+    def _apply_trim(self, today: dt.date) -> None:
+        """Carry last night's landing into tonight, once per day. Landed
+        above the floor and points went unspent, so widen the window at the
+        front; landed under it and shorten at the back. Half the miss, and
+        the carried total clamped, so one odd night cannot swing the plan."""
+        yesterday = today - dt.timedelta(days=1)
+        if self.trim.get("last") == yesterday.isoformat():
+            return
+        rec = self.store.day(yesterday)
+        step = policy.trim_step(rec, config.AUTO_SOC_FLOOR, config.AUTO_TRIM_GAIN)
+        if step is None:
+            return
+        cap = abs(float(config.AUTO_TRIM_MAX_POINTS))
+        points = round(max(-cap, min(cap, float(self.trim.get("points") or 0.0) + step)), 2)
+        entry = {"night": yesterday.isoformat(), "landed": rec.get("soc_min"),
+                 "at": rec.get("soc_min_at"), "aimed": config.AUTO_SOC_FLOOR,
+                 "step": step, "carried": points}
+        self.trim = {"points": points, "last": yesterday.isoformat(),
+                     "log": [*(self.trim.get("log") or []), entry][-30:]}
+        self.governor.trim = points
+        write_trim(self.trim)
+        self.log({"event": "priority-trim", **entry})
 
     def ensure_profile(self, now: dt.datetime) -> None:
         today = now.date()
@@ -285,6 +343,12 @@ class Autopilot:
             "need_wh": round(decision.need_wh),
             "headroom_wh": round(decision.headroom_wh),
             "margin_wh": config.AUTO_RELEASE_MARGIN_WH,
+            "trim_points": round(decision.trim, 2),
+            "budget_points": round(decision.budget, 1),
+            "cost_points": round(decision.cost, 1),
+            "points_per_kwh": round(prof.points_per_kwh, 2),
+            "stand_down": decision.stand_down.strftime("%H:%M") if decision.stand_down else None,
+            "evening_reserve_h": config.AUTO_EVENING_RESERVE_H,
             "latest_release": config.AUTO_RELEASE_LATEST,
             "floor": config.AUTO_SOC_FLOOR, "resume": config.AUTO_SOC_RESUME,
             "floor_hold": decision.floor_hold,
