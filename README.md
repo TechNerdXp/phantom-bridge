@@ -174,7 +174,12 @@ The rule, in `src/policy.py`:
   at the hours it moves -- an hour at 600 W costs three times an hour at
   200 W -- never by the clock. A night with a real outage is not carried.
 - **Turnaround**: yesterday's lowest-SOC time, when it fell between 03:00 and
-  noon -- the minute the sun started pushing the pack up.
+  noon -- the minute the sun started pushing the pack up. Two guards, because
+  the pack rises for other reasons: a low **before that day's first PV** is
+  thrown out (a utility charge lifts it too, and that rise is not a sunrise),
+  and a candidate more than `TURNAROUND_DRIFT_MIN` from the recent median is
+  distrusted in favour of the median, so one odd morning cannot drag the
+  whole day's frame.
 - **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has
   lifted the pack past 35 % inside the day window. The 5-point gap is what
   stops it flapping at dawn.

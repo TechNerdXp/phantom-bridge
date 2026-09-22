@@ -274,7 +274,11 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    "idle slide wastes a held pack" night) was withdrawn by `_labs` --
    the full-to-full balance shows the slide is the number, not energy.
    Turnaround = yesterday's lowest-SOC time when it
-   fell between 03:00 and noon; dusk = the end of the last hour at a
+   fell between 03:00 and noon, behind **two guards** (owner, 2026-09-23):
+   it must not be before that day's first PV, because a utility charge
+   lifts the pack too and that rise is not a sunrise; and it must be
+   within `TURNAROUND_DRIFT_MIN` of the recent median, or the median is
+   used instead. A dropped candidate is listed in `notes.turnaround_dropped`. dusk = the end of the last hour at a
    quarter of the best PV hour, yesterday; pack Wh = the SOC-scale median
    the episodes imply; efficiency and the hourly load from the last 7
    finished days (`src/days.py`, the cache the history window also uses,

@@ -93,6 +93,11 @@ TOP_OF_SCALE = 90
 # landing says nothing about the plan and is not carried into the trim.
 OUTAGE_SPOILS_S = 30 * 60
 
+# How far yesterday's turnaround may sit from the recent median before it is
+# distrusted and the median used instead. The second of the two guards on
+# it; the first is the sun itself (_dawn_low).
+TURNAROUND_DRIFT_MIN = 90
+
 # Nominal 48 V LiFePO4 bus, for BATTERY_CAPACITY_AH -> Wh.
 NOMINAL_V = 51.2
 
@@ -158,6 +163,35 @@ def _in_window(minute, turnaround: int, dusk: int) -> bool:
     return minute is not None and turnaround <= minute < dusk
 
 
+def _dawn_low(day: dict):
+    """A day's turnaround candidate: the minute its SOC bottomed out, but
+    only when the SUN is what lifted it again.
+
+    The pack rises for other reasons -- a utility charge, rare on this site
+    but not impossible -- and that rise is not a sunrise. A low before the
+    day's first PV therefore says nothing about the sun and is thrown out,
+    and so is one outside the dawn window entirely.
+
+    >>> _dawn_low({"soc_min_at": "07:14", "pv_first": "06:52"})
+    434
+    >>> _dawn_low({"soc_min_at": "04:10", "pv_first": "06:52"}) is None  # charged
+    True
+    >>> _dawn_low({"soc_min_at": "21:30", "pv_first": "06:52"}) is None  # not dawn
+    True
+    >>> _dawn_low({"soc_min_at": "07:14"})                    # no PV record
+    434
+    >>> _dawn_low({}) is None
+    True
+    """
+    m = parse_hm((day or {}).get("soc_min_at"))
+    if m is None or not (MORNING[0] <= m < MORNING[1]):
+        return None
+    first_sun = parse_hm(day.get("pv_first"))
+    if first_sun is not None and m < first_sun:
+        return None
+    return m
+
+
 def build_profile(days: list, *, default_turnaround: str = "07:00",
                   default_dusk: str = "17:00", default_load_w: float = 400.0,
                   dusk_fraction: float = 0.25, pack_wh: float | None = None,
@@ -194,18 +228,59 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     (2000.0, 'median of 1 episodes implies 4800 Wh, capped at the practical 2000 Wh')
     >>> [prof.hourly_load_w[h] for h in (0, 3, 12, 20)]
     [300.0, 100.0, 1000.0, 500.0]
+
+    The turnaround has two guards. A pack lifted before the sun was lifted
+    by something else -- a utility charge -- so that low is not a sunrise
+    and the day falls through to its first PV instead::
+
+        >>> prof = build_profile([_fake_day("2026-09-22", soc_min_at="04:30")])
+        >>> fmt_hm(prof.turnaround_min), prof.notes["turnaround"]
+        ('07:00', 'first sun 2026-09-22 at 07:00')
+        >>> prof.notes["turnaround_dropped"]
+        ['2026-09-22: low at 04:30, first sun 07:00']
+
+    And a candidate far from the last few days is distrusted in favour of
+    their median, so one odd morning cannot drag the day's frame::
+
+        >>> prof = build_profile([_fake_day("2026-09-22", soc_min_at="10:30"),
+        ...                       _fake_day("2026-09-21", soc_min_at="07:14"),
+        ...                       _fake_day("2026-09-20", soc_min_at="07:10"),
+        ...                       _fake_day("2026-09-19", soc_min_at="07:20")])
+        >>> fmt_hm(prof.turnaround_min)
+        '07:17'
+        >>> prof.notes["turnaround"]
+        'lowest SOC 2026-09-22 at 10:30 is 193 min off the 4-day median - using the median 07:17'
     """
     notes: dict = {}
     days = [d for d in (days or []) if d and d.get("samples")]
 
-    # -- the turnaround: yesterday's lowest SOC, if it was a dawn low
+    # -- the turnaround: yesterday's lowest SOC, if the SUN is what lifted
+    # the pack. A utility charge does it too -- rare here, but it happens --
+    # and would otherwise be read as a sunrise and drag the whole day's
+    # frame hours early. Two guards (owner, 2026-09-23): the sun itself,
+    # so a low before that day's first PV is thrown out, and the last few
+    # days, so a candidate far from their median is distrusted in favour
+    # of the median.
     turnaround = None
-    for d in days:
-        m = parse_hm(d.get("soc_min_at"))
-        if m is not None and MORNING[0] <= m < MORNING[1]:
+    seen = [(d, _dawn_low(d)) for d in days]
+    for d, m in seen:
+        if m is None and parse_hm(d.get("soc_min_at")) is not None:
+            notes.setdefault("turnaround_dropped", []).append(
+                "%s: low at %s, first sun %s" % (d.get("date"), d.get("soc_min_at"),
+                                                 d.get("pv_first") or "none"))
+    valid = [(d, m) for d, m in seen if m is not None]
+    if valid:
+        d, m = valid[0]
+        mid = statistics.median([x for _, x in valid])
+        if len(valid) >= 3 and abs(m - mid) > TURNAROUND_DRIFT_MIN:
+            turnaround = int(mid)
+            notes["turnaround"] = (
+                "lowest SOC %s at %s is %d min off the %d-day median - "
+                "using the median %s" % (d.get("date"), d.get("soc_min_at"),
+                                         abs(m - mid), len(valid), fmt_hm(mid)))
+        else:
             turnaround = m
             notes["turnaround"] = "lowest SOC %s at %s" % (d.get("date"), d.get("soc_min_at"))
-            break
     if turnaround is None:
         for d in days:
             m = parse_hm(d.get("pv_first"))
