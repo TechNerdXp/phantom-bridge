@@ -128,13 +128,18 @@ class Autopilot:
             self.last_request_key = req_key
             if decision.request:
                 self.log({"event": "priority-request", **decision.request})
-        key = (decision.want, decision.phase)
+        # The first cycle decides on the placeholder profile while the plan
+        # thread reads yesterday; the profile is part of the key so the
+        # line is written again when the real one lands, with its numbers.
+        key = (decision.want, decision.phase, prof.built_for, prof.days)
         if key != self.last_key:
             self.last_key = key
             self.log({"event": "priority-decision", "want": decision.name,
                       "phase": decision.phase, "reason": decision.reason,
                       "soc": soc, "current": policy.NAMES.get(self.current),
                       "enabled": bool(config.AUTO_PRIORITY),
+                      "profile": "placeholder" if prof.built_for is None
+                      else "%d days, pack %d Wh" % (prof.days, round(prof.pack_wh)),
                       "release_at": decision.release_at.strftime("%H:%M")
                       if decision.release_at else None,
                       "until": decision.until.strftime("%H:%M") if decision.until else None,

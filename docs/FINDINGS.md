@@ -553,4 +553,44 @@ is for. 04:44 was this session's rebuild. The link did not drop on its
 own tonight; the DHCP reservation stays the fix for the other failure
 (the dongle moving), not this one.
 
+### 2026-09-22 -- the first autopilot night: why there was no 06:10 release
+
+The watch screen showed "release ~06:10" in the small hours and the
+pack was still on SUB at 06:10. Not a missed write: the plan withdrew
+the release, and the number the owner saw came from a build that no
+longer runs.
+
+The night, from the log. The panel's menu-99 timer flipped to SBU at
+02:00 and the pack ran the house from 63 % to 41 % before
+`AUTO_PRIORITY` went on at 03:18 and the first POP01 set SUB (readback
+proven). Something put it back to SBU between 03:38 and 03:41 -- the
+collector was stopped for a hand write then, so it saw the change only
+as a restart's initial read -- and 03:42 set SUB again. From 03:20 the
+SOC still slid, 40 % to 34 % by 06:20, on SUB with 1 A of utility
+charge showing: the voltage-derived SOC relaxing after the discharge,
+not draw.
+
+Where 06:10 came from. The builds of 03:14-04:44 counted the pack as
+the episodes' median, 4768 Wh, with no margin. At 39 % that is 429 Wh
+above the floor, and the expected draw from 06:10 to the 07:14
+turnaround (316 W then 350 W, at 0.78) is about 440 Wh, so the release
+sat at 06:10-06:12. The build committed at 05:14 and running since 04:44
+caps the pack at 2000 Wh and keeps a 300 Wh release margin; the same
+39 % is 180 Wh, under the margin alone, so from 04:44 the decision has
+been "too little above the floor to release tonight" and stayed so. At
+06:10 the pack read 35 %: 100 Wh usable against 396 Wh of need plus the
+margin. On the 2 kWh scale a release needs at least 45 % even at the
+end of the night, and with the timer spending the pack from 02:00 that
+is not reachable. Clearing menu 99 is what makes the plan's release
+possible; the margin is the second lever (`AUTO_RELEASE_MARGIN_WH`).
+
+One quirk fixed: each start logged its first `priority-decision` on the
+placeholder profile (fallback pack, default hours) before the plan
+thread landed, and never again while the phase held, so the logged
+release times (06:34, 06:38, 06:36) were the placeholder's and the real
+estimate reached only the screen. The profile is now part of the log
+key -- the line is written again when the real one lands, and says
+which profile it used (`placeholder` / `3 days, pack 2000 Wh`).
+Rebuilt and restarted 06:23.
+
 ## Next entry goes here
