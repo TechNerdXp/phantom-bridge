@@ -907,8 +907,20 @@ class WatchWindow:
         cv.lines([(xn, y - 6), (xn, y + h + 4)], INK, 1.4)
         cv.polygon([(xn - 4, y - 11), (xn + 4, y - 11), (xn, y - 5)], INK)
 
-    def _lanes_text(self, hdc, x0, y, w, h, past, ahead, now_min, origin=0) -> None:
+    def _lanes_text(self, hdc, x0, y, w, h, past, ahead, now_min, origin=0, sun=None) -> None:
         label_y = y + h + 3
+        # The sun's window is SBU by the rule, whether or not the tape has a
+        # record of it -- so say so on the patch itself rather than leave it
+        # blank (owner, 2026-09-23). Drawn in the plan's key, and only where
+        # no record already writes its own letters.
+        if sun and sun[0] is not None and sun[1] is not None:
+            rise = self._first_after(sun[0], origin)
+            fall = min(self._first_after(sun[1], rise), origin + self.DAY_MIN)
+            mid = (rise + fall) / 2
+            covered = any(lane["from"] <= mid < lane["to"] for lane in past)
+            x1, x2 = (self._lane_x(x0, w, m, origin) for m in (rise, fall))
+            if not covered and x2 - x1 >= 32:
+                self._text(hdc, "SBU", x1, y + 1, x2 - x1, h - 2, INK_FAINT, 9, 700, DT_CENTER)
         for lane in past:
             shown = lane.get("actual") or lane.get("want")
             x1 = self._lane_x(x0, w, lane["from"], origin)
@@ -941,6 +953,15 @@ class WatchWindow:
             colour = (INK if cut["sure"] else INK_DIM) if cut["ahead"] else INK_FAINT
             self._mono(hdc, ("" if cut["sure"] else "~") + policy.fmt_hm(cut["at"]),
                        x - 26, label_y, 52, 14, colour, 10)
+        # Both ends are the same turnaround -- the rule is cut on it, and
+        # the next day starts at the right edge. Saying so is what stops the
+        # edge being read as whatever cut happens to sit near it.
+        if sun and sun[0] is not None:
+            edge = policy.fmt_hm(self._first_after(sun[0], origin))
+            for at, align in ((x0 - 2, DT_LEFT), (x0 + w - 38, DT_RIGHT)):
+                if not any(abs(at + 20 - other) < 24 for other in taken):
+                    self._mono(hdc, edge, at, label_y, 40, 14, INK_FAINT, 9, align)
+                    taken.append(at + 20)
         # the round hours that fall inside the window, wherever they land
         for hour in (0, 6, 12, 18):
             at = self._first_after(hour * 60, origin)
@@ -1158,7 +1179,7 @@ class WatchWindow:
 
         # -- the day's rule, and under it the status line and the way in
         self._lanes_text(hdc, rule_x, rule_y, rule_w, rule_h, past, ahead, now_min,
-                         rule_origin)
+                         rule_origin, sun)
         if not (past or ahead):
             self._text(hdc, "no plan published", rule_x, rule_y + 1, rule_w, rule_h - 2,
                        INK_FAINT, 9, 400, DT_CENTER)

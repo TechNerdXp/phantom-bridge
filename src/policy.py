@@ -1160,7 +1160,7 @@ def lanes_ahead(now_min: int, dusk_min: int, release_min=None, latest_min=None,
     released = phase == "night"        # tonight's reserve is already let go
     sure = released
     if want == "SUB" and phase == "floor":
-        end = min(t + FLOOR_FADE_MIN, dusk_min) if t < dusk_min else horizon
+        end = min(t + FLOOR_FADE_MIN, dusk_min, horizon) if t < dusk_min else horizon
         if end > t:
             lanes.append(_lane(t, end, "SUB", False, open_end=True))
             t = end
@@ -1171,7 +1171,11 @@ def lanes_ahead(now_min: int, dusk_min: int, release_min=None, latest_min=None,
             lanes.append(_lane(t, end, "SUB", sure))
             t, released = end, True
     if t < dusk_min:
-        lanes.append(_lane(t, dusk_min, "SBU", True))
+        # Clipped at the horizon: the window closes at the next sunrise, and
+        # the dusk beyond it belongs to the next day's rule, not this one.
+        # Unclipped, the rule labelled its right edge with tomorrow's dusk
+        # where the turnaround belongs (2026-09-23).
+        lanes.append(_lane(t, min(dusk_min, horizon), "SBU", True))
         t, released = dusk_min, False
     if t < horizon:
         if released:
