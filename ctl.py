@@ -438,6 +438,17 @@ def cmd_auto(args, conn, log) -> int:
           f"  request cap {config.AUTO_REQUEST_MAX_MIN} min\n")
     print(f"PROFILE  from {prof.days} finished day(s)")
     print(f"  turnaround  {policy.fmt_hm(prof.turnaround_min)}   {prof.notes.get('turnaround')}")
+    offset = prof.notes.get("turnaround_offset")
+    if offset is not None:
+        tomorrow = naive.date() + dt.timedelta(days=1)
+        rise = autopilot.sunrise_of(tomorrow)
+        if rise is not None:
+            rise = round(rise)
+            band = policy.TURNAROUND_NOISE_MIN
+            print(f"              tomorrow's sunrise {policy.fmt_hm(rise)}, so a low "
+                  f"between {policy.fmt_hm(rise + offset - band)} and "
+                  f"{policy.fmt_hm(rise + offset + band)} is believed "
+                  f"(+{offset} +-{band} min)")
     print(f"  dusk        {policy.fmt_hm(prof.dusk_min)}   {prof.notes.get('dusk')}")
     print(f"  pack        {prof.pack_wh:.0f} Wh per 100% SOC   {prof.notes.get('pack_wh')}")
     print(f"  drain rate  {prof.points_per_kwh:.1f} SOC points per kWh the house draws"
