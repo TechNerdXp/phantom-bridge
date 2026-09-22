@@ -182,8 +182,12 @@ The rule, in `src/policy.py`:
 The `policy` block the collector publishes in `logs/state.json` is a
 **contract** with Switch-X, which reads it instead of recomputing the
 night: `want`, `phase`, `release_at`, `turnaround`, `usable_wh`, `need_wh`,
-`floor`, `current`, and since 2026-09-22 `until`, `headroom_wh` and
-`request`. Keys are added, never renamed or dropped.
+`floor`, `current`, and since 2026-09-22 `until`, `headroom_wh`, `request`
+and `tape` (the lane record -- `{date, marks: [{at, want, current}]}`, one
+mark per change in the plan or in what the inverter is actually set to,
+`at` a dated ISO minute and kept 36 hours, which is what the watch screen's
+rule draws; it outlives midnight because the rule's night does). Keys are
+added, never renamed or dropped.
 
 `python ctl.py auto` prints the profile it read (turnaround, dusk, pack Wh
 per SOC point, efficiency, the night's hourly load), the verdict for this
@@ -257,6 +261,9 @@ percentage on it, the empty part drawn as the tank body, so 40% reads as
                          -476 W
                    52.9 V  9 A  discharging
 
+  [#### SBU ####|# SUB #|##### SBU #####|.. SUB ..|... SBU ...]
+  07:14      09:40   11:10    12  ^now   17:00  00  ~02:00  06
+
   Drawing on the pack by priority (SBU)                        history >
 ```
 
@@ -268,9 +275,52 @@ charging. The screen used to print that as ON BATTERY. Now the box says
 INVERTER or GRID BYPASS and the header says ON SOLAR, SOLAR + BATTERY,
 ON BATTERY, GRID OUT or ON GRID from the currents.
 
-Under the board there is one line of status and, at the right, "history >",
-which opens the history window. The day's figures and the cable bar that
-used to sit here live there now; the arrows carry the limits.
+Under the board is **the day's rule**: one horizontal 24-hour scale for the
+one thing the four pillars cannot show -- which way the house is pointed,
+and when that changes.
+
+It runs **sunrise to sunrise**, not midnight to midnight. Sunrise here is
+the turnaround: the minute the pack stops falling and the sun starts
+pushing it back up, taken from yesterday's lowest SOC, so a single point of
+rise is enough to place it (`07:14`, on the reference site). That is the
+plan's own day -- the night is one unbroken stretch instead of two halves
+either side of midnight, and **both cuts land on the scale** instead of
+falling off the right edge.
+
+Left of the now marker is the record: what the inverter was actually set to,
+from the tape the collector publishes. Right of it is the plan, the same
+colours in a lighter key.
+
+**The lane is coloured by who actually carried the house, not by the
+setting** -- the setting only says who was *meant* to. So SBU is **green**
+while the sun carried it and **teal** when the pack did, and SUB is
+**orange** on the utility and **blue** when the grid failed and the pack
+carried it anyway. The letters written in the lane stay the setting, so the
+bar says both at once. Ahead of now there is no source to go on, so the
+plan wears the setting's own colour.
+
+A reading has to hold five minutes before the tape believes it: the
+inverter flips line/battery every few seconds around dawn and a cloud
+crosses faster than a lane is wide. A pack covering less than a quarter of
+the house with the sun up is topping off a burst, not carrying anything,
+and still reads as solar. The sun's window (turnaround to dusk) lies under
+all of it as a faint wash, and the round hours inside the window are
+labelled wherever they land.
+
+The cuts are the point of it -- the two switches of the owner's rule, with
+their times: SBU to SUB at dusk, and SUB back to SBU at the release. A time
+the plan has not worked out yet, because the hold has not begun, wears a
+`~` and stands in from `AUTO_RELEASE_LATEST`; a switch that falls past the
+next sunrise is labelled at the right edge with a `>`. A stretch nothing can
+put a clock on -- the floor hold, which ends when the sun lifts the pack
+past the resume level -- fades out instead of claiming a time. A **red
+underline** marks where the inverter disagreed with the plan: its own timer
+(menu 99), a hand on the panel, or the autopilot still being advisory.
+
+Under that, one line of status and, at the right, "history >", which opens
+the history window; a click anywhere in that bottom band opens it. The
+day's figures and the cable bar that used to sit here live there now; the
+arrows carry the limits.
 
 Every arrow also wears its own limit. The grid leg is judged against the
 7/29 on the input (`GRID_LINE_RATING_A`; its amps are derived, watts over

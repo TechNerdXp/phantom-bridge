@@ -15,8 +15,8 @@ bridge.write_state publishes as `policy` in logs/state.json.
 That payload is a CONTRACT. Switch-X (D:/PowerTools/switch-x) reads it
 instead of recomputing the night, and a renamed key breaks it quietly.
 Stable keys: want, phase, release_at, turnaround, usable_wh, need_wh,
-floor, current -- plus, since 2026-09-22, until, headroom_wh and request.
-Add keys freely; never rename or drop one.
+floor, current -- plus, since 2026-09-22, until, headroom_wh, request and
+tape. Add keys freely; never rename or drop one.
 """
 from __future__ import annotations
 
@@ -28,6 +28,28 @@ import bridge
 import config
 import days
 import policy
+
+# How many marks of the day's tape are kept. A day has two or three plan
+# changes and a handful of disagreements; the cap is only there so a
+# flapping reading cannot grow the published state without bound.
+TAPE_MAX = 96
+
+# And how far back they are kept. The watch screen's rule runs sunrise to
+# sunrise, so the night it draws straddles midnight and a tape wiped at
+# midnight would lose half of it. 36 hours covers any such window with
+# room for a late sunrise.
+TAPE_KEEP_H = 36
+
+# A reading has to hold this long before the tape believes it. The inverter
+# flips line/battery every few seconds around dawn (see FINDINGS) and a
+# cloud crosses faster than a lane is wide -- the rule is 2.4 minutes to the
+# pixel, so anything shorter than this is noise, not a record.
+SETTLE_S = 300
+
+# The pack covering less than this share of the house, with the sun up, is
+# the pack topping off a burst rather than carrying anything: a full pack
+# nudging an ample solar day still reads as solar (owner, 2026-09-22).
+BURST_SHARE = 0.25
 
 
 def profile_kwargs() -> dict:
@@ -82,6 +104,9 @@ class Autopilot:
         self.last_write: dict | None = None
         self.last_key = None
         self.stood_down = False
+        self.tape_date: str | None = None
+        self.tape: list[dict] = []
+        self.settling: dict = {}        # key -> (believed, seen, since)
 
     # -- the profile ---------------------------------------------------------
 
@@ -112,6 +137,84 @@ class Autopilot:
             self.profile = policy.build_profile([], **profile_kwargs())
         threading.Thread(target=self._build, args=(today,), daemon=True,
                          name="priority-plan").start()
+
+    # -- the day's tape ------------------------------------------------------
+
+    @staticmethod
+    def _prune(marks: list, now: dt.datetime) -> list:
+        """The marks still inside the keep window, oldest first, capped.
+        The stamps are fixed-width ISO minutes, so a string compare orders
+        them."""
+        cutoff = (now - dt.timedelta(hours=TAPE_KEEP_H)).strftime("%Y-%m-%dT%H:%M")
+        return [m for m in marks if str(m.get("at")) >= cutoff][-TAPE_MAX:]
+
+    def _seed_tape(self, now: dt.datetime) -> None:
+        """Adopt the marks from the last published state, so a collector
+        restarted in the evening still draws the day behind it -- and the
+        night, which the rule's window straddles. Anything undated is from
+        the first cut of this format and is dropped."""
+        tape = ((bridge.read_state(max_age_s=float("inf")) or {})
+                .get("policy") or {}).get("tape") or {}
+        if not isinstance(tape, dict):
+            return
+        self.tape = self._prune([m for m in (tape.get("marks") or [])
+                                 if isinstance(m, dict) and "T" in str(m.get("at"))], now)
+
+    def settle(self, key: str, value, now: dt.datetime, seconds=SETTLE_S):
+        """A reading, held for `seconds` before it counts. The first one is
+        taken as it stands; after that a change has to last, so a flap
+        leaves the believed value alone."""
+        state, seen, since = self.settling.get(key, (None, None, None))
+        if value is None:
+            return state
+        if value != seen:
+            seen, since = value, now
+        if state is None or (value != state and since is not None
+                             and (now - since).total_seconds() >= seconds):
+            state = value
+        self.settling[key] = (state, seen, since)
+        return state
+
+    @staticmethod
+    def carried_by(flow: dict) -> str | None:
+        """Who actually carried the house, in one word for the tape: solar,
+        battery or grid. The setting says who was *meant* to -- SUB with the
+        grid down is still the pack -- so the rule colours by this."""
+        flow = flow or {}
+        source = flow.get("source")
+        if source == "solar+battery":
+            load = flow.get("load_w") or 0.0
+            out = max(0.0, -(flow.get("batt_w") or 0.0))
+            return "battery" if load > 0 and out / load >= BURST_SHARE else "solar"
+        return source if source in ("solar", "battery", "grid") else None
+
+    def mark_tape(self, now: dt.datetime, decision: policy.Decision,
+                  flow: dict | None = None) -> dict:
+        """The lane record: one mark per change in the plan or in what the
+        inverter is actually set to. It is what lets the watch screen draw
+        the estimate against the record -- the stretches the inverter spent
+        on its own timer show up as a disagreement. Dated, and kept for a
+        day and a half, because the rule runs sunrise to sunrise and its
+        night is cut in two by midnight."""
+        today = now.date().isoformat()
+        if self.tape_date is None:
+            self._seed_tape(now)
+        current = policy.NAMES.get(self.current)
+        present = (flow or {}).get("grid_present")
+        grid = self.settle("grid", None if present is None else bool(present), now)
+        src = self.settle("source", self.carried_by(flow), now)
+        last = self.tape[-1] if self.tape else None
+        if (not last or last.get("want") != decision.name
+                or last.get("current") != current or last.get("grid") != grid
+                or last.get("src") != src):
+            self.tape.append({"at": now.strftime("%Y-%m-%dT%H:%M"),
+                              "want": decision.name, "current": current,
+                              "grid": grid, "src": src})
+            self.tape = self._prune(self.tape, now)
+        elif self.tape_date != today:
+            self.tape = self._prune(self.tape, now)
+        self.tape_date = today
+        return {"date": self.tape_date, "marks": self.tape}
 
     # -- one cycle -----------------------------------------------------------
 
@@ -185,6 +288,7 @@ class Autopilot:
             "latest_release": config.AUTO_RELEASE_LATEST,
             "floor": config.AUTO_SOC_FLOOR, "resume": config.AUTO_SOC_RESUME,
             "floor_hold": decision.floor_hold,
+            "tape": self.mark_tape(now, decision, analysis),
             "profile_days": prof.days,
             "profile_for": prof.built_for.isoformat() if prof.built_for else None,
             "last_write": self.last_write,

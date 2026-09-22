@@ -705,6 +705,279 @@ def headline(payload: dict | None) -> str | None:
 
 
 # --------------------------------------------------------------------------
+# the day as a rule -- the lanes the plan cuts across 24 hours
+# --------------------------------------------------------------------------
+#
+# The watch screen carries a 24-hour rule under the board: what the house
+# actually ran on (the collector's tape) and where the plan cuts from one
+# setting to the other. Both sides are lanes -- a stretch of clock with one
+# setting on it -- so one renderer draws them and the estimate lines up
+# with the record.
+#
+# The rule's 24 hours run **sunrise to sunrise**, not midnight to midnight
+# (owner, 2026-09-22): the window opens at the turnaround, the moment the
+# sun starts lifting the pack, and closes at the next one. That is the
+# plan's own day -- both cuts, dusk and the release, fall inside it, and
+# the night is one stretch instead of being sawn in half at midnight.
+#
+# Minutes are always counted from TODAY's midnight, so they run negative
+# into yesterday and past 1440 into tomorrow: a release at 01:20 decided at
+# 22:00 is 1520, and a mark from yesterday evening is -120. `window_origin`
+# gives the left edge; the renderer maps a minute to x by subtracting it.
+
+FULL_DAY = 24 * 60
+
+# How far the "SUB at the floor" lane is drawn before it fades out. That
+# hold ends when the sun has lifted the pack past the resume level, and
+# nothing can say when: the lane states the setting and then admits it.
+FLOOR_FADE_MIN = 120
+
+
+def _show(lanes) -> list:
+    """Doctest helper: lanes as (from, to, want, sure) tuples."""
+    return [(l["from"], l["to"], l["want"], l["sure"]) for l in lanes]
+
+
+def _lane(start, end, want: str, sure: bool, open_end: bool = False) -> dict:
+    return {"from": int(start), "to": int(end), "want": want,
+            "sure": bool(sure), "open": bool(open_end)}
+
+
+def window_origin(turnaround_min, now_min) -> int:
+    """The left edge of the rule: the last turnaround at or before now --
+    the sun's own midnight. Minutes from today's midnight, negative when
+    that sunrise was yesterday's.
+
+    >>> window_origin(434, 20 * 60)          # this morning's 07:14
+    434
+    >>> window_origin(434, 3 * 60)           # before dawn: yesterday's
+    -1006
+    """
+    origin = int(turnaround_min)
+    while origin > now_min:
+        origin -= FULL_DAY
+    return origin
+
+
+def _next_release(after: int, release_min=None, latest_min=None):
+    """The next release at or after `after`, and whether it is the plan's
+    own arithmetic (True) or the latest-release clock standing in (False).
+
+    >>> _next_release(20 * 60, 23 * 60 + 30, 2 * 60)
+    (1410, True)
+    >>> _next_release(14 * 60, None, 2 * 60)           # tomorrow's 02:00
+    (1560, False)
+    >>> _next_release(14 * 60, None, None)
+    (None, False)
+    """
+    for value, sure in ((release_min, True), (latest_min, False)):
+        if value is None:
+            continue
+        minute = int(value)
+        while minute < after:
+            minute += FULL_DAY
+        return minute, sure
+    return None, False
+
+
+def lanes_ahead(now_min: int, dusk_min: int, release_min=None, latest_min=None,
+                want: str = "SBU", phase: str = "day",
+                horizon_min: int = FULL_DAY) -> list[dict]:
+    """The plan from `now_min` to `horizon_min` -- the right edge of the
+    rule, which is the next sunrise, or midnight if nothing says otherwise.
+
+    Two cuts a day: SBU -> SUB at dusk, when the pack becomes the outage
+    reserve, and SUB -> SBU at the release, when what is above the floor
+    can carry the house to the turnaround. The release is only computed
+    once the hold has begun; before that the latest-release clock stands
+    in and the lane says so (`sure` False). The floor hold has no clock at
+    all and is marked `open`.
+
+    A day that has not reached dusk: the pack carries it, then the hold::
+
+        >>> _show(lanes_ahead(14 * 60, 18 * 60 + 10, latest_min=2 * 60))
+        [(840, 1090, 'SBU', True), (1090, 1560, 'SUB', False)]
+
+    Inside tonight's hold, with the release worked out::
+
+        >>> _show(lanes_ahead(20 * 60, 18 * 60 + 10, 23 * 60 + 30, 2 * 60,
+        ...                  want="SUB", phase="hold"))
+        [(1200, 1410, 'SUB', True), (1410, 1440, 'SBU', True)]
+
+    Before dawn, still holding: the hold ends this morning, the day is the
+    pack's, and tonight's hold is only the clock again::
+
+        >>> _show(lanes_ahead(60, 18 * 60 + 10, 80, 2 * 60, want="SUB", phase="hold"))
+        [(60, 80, 'SUB', True), (80, 1090, 'SBU', True), (1090, 1560, 'SUB', False)]
+
+    Released, so the rest of the night is the pack's::
+
+        >>> _show(lanes_ahead(23 * 60, 18 * 60 + 10, want="SBU", phase="night"))
+        [(1380, 1440, 'SBU', True)]
+
+    At the floor in the morning: SUB now, fading, then the day as usual::
+
+        >>> _show(lanes_ahead(8 * 60, 18 * 60 + 10, latest_min=2 * 60,
+        ...                  want="SUB", phase="floor"))
+        [(480, 600, 'SUB', False), (600, 1090, 'SBU', True), (1090, 1560, 'SUB', False)]
+        >>> lanes_ahead(8 * 60, 18 * 60 + 10, want="SUB", phase="floor")[0]["open"]
+        True
+
+    Run to the next sunrise instead of midnight and the whole night fits,
+    both cuts in view -- which is why the rule is drawn that way::
+
+        >>> _show(lanes_ahead(14 * 60, 18 * 60 + 10, latest_min=2 * 60,
+        ...                   horizon_min=31 * 60 + 14))
+        [(840, 1090, 'SBU', True), (1090, 1560, 'SUB', False), (1560, 1874, 'SBU', False)]
+        >>> _show(lanes_ahead(22 * 60 + 37, 18 * 60 + 10, 2 * 60, 2 * 60,
+        ...                   want="SUB", phase="hold", horizon_min=31 * 60 + 14))
+        [(1357, 1560, 'SUB', True), (1560, 1874, 'SBU', True)]
+    """
+    lanes: list[dict] = []
+    t = int(now_min)
+    horizon = int(horizon_min)
+    released = phase == "night"        # tonight's reserve is already let go
+    sure = released
+    if want == "SUB" and phase == "floor":
+        end = min(t + FLOOR_FADE_MIN, dusk_min) if t < dusk_min else horizon
+        if end > t:
+            lanes.append(_lane(t, end, "SUB", False, open_end=True))
+            t = end
+    elif want == "SUB":
+        release, sure = _next_release(t, release_min, latest_min)
+        end = horizon if release is None else release
+        if end > t:
+            lanes.append(_lane(t, end, "SUB", sure))
+            t, released = end, True
+    if t < dusk_min:
+        lanes.append(_lane(t, dusk_min, "SBU", True))
+        t, released = dusk_min, False
+    if t < horizon:
+        if released:
+            lanes.append(_lane(t, horizon, "SBU", sure))
+        else:
+            # Tonight's hold. Its release is not worked out until the hold
+            # itself begins, so here it is the clock or nothing.
+            release, _ = _next_release(max(t, dusk_min), None, latest_min)
+            lanes.append(_lane(t, horizon if release is None else release, "SUB", False))
+            if release is not None and release < horizon:
+                lanes.append(_lane(release, horizon, "SBU", False))
+    return lanes
+
+
+def lanes_from(payload: dict | None, now_min: int, horizon_min=None) -> list[dict]:
+    """The published payload -> the lanes ahead, to the next sunrise.
+    Nothing without a dusk; the midnight edge when there is no turnaround.
+
+    >>> _show(lanes_from({"dusk": "18:10", "turnaround": "07:14",
+    ...                   "latest_release": "02:00", "want": "SBU",
+    ...                   "phase": "day"}, 14 * 60))
+    [(840, 1090, 'SBU', True), (1090, 1560, 'SUB', False), (1560, 1874, 'SBU', False)]
+    >>> _show(lanes_from({"dusk": "18:10", "latest_release": "02:00",
+    ...                  "want": "SBU", "phase": "day"}, 14 * 60))
+    [(840, 1090, 'SBU', True), (1090, 1560, 'SUB', False)]
+    >>> lanes_from(None, 0), lanes_from({}, 0)
+    ([], [])
+    """
+    payload = payload or {}
+    dusk = parse_hm(payload.get("dusk"))
+    if dusk is None:
+        return []
+    if horizon_min is None:
+        turnaround = parse_hm(payload.get("turnaround"))
+        horizon_min = (window_origin(turnaround, now_min) + FULL_DAY
+                       if turnaround is not None else FULL_DAY)
+    return lanes_ahead(now_min, dusk,
+                       release_min=parse_hm(payload.get("release_at")),
+                       latest_min=parse_hm(payload.get("latest_release")),
+                       want=payload.get("want") or "SBU",
+                       phase=payload.get("phase") or "day",
+                       horizon_min=horizon_min)
+
+
+def _mark_min(at, today=None):
+    """A tape mark's time as minutes from today's midnight. 'HH:MM' is
+    taken as today; a dated mark counts a day per day, so yesterday
+    evening goes negative -- the rule's night crosses midnight and the
+    two halves have to land on one scale.
+
+    >>> _mark_min("07:30")
+    450
+    >>> _mark_min("2026-09-21T22:00", dt.date(2026, 9, 22))
+    -120
+    >>> _mark_min("2026-09-22T07:30", dt.date(2026, 9, 22))
+    450
+    >>> _mark_min("nonsense"), _mark_min(None), _mark_min("x T", dt.date(2026, 9, 22))
+    (None, None, None)
+    """
+    if not isinstance(at, str):
+        return None
+    if "T" not in at:
+        return parse_hm(at)
+    date, _, hm = at.partition("T")
+    minute = parse_hm(hm)
+    if minute is None or today is None:
+        return minute
+    try:
+        day = dt.date.fromisoformat(date)
+    except ValueError:
+        return None
+    return minute + (day - today).days * FULL_DAY
+
+
+def lanes_behind(marks, now_min: int, today=None, since=None) -> list[dict]:
+    """The collector's tape -> what the house actually ran on, from the
+    first mark to now. Each lane carries the plan that was in force over
+    it as well, so a stretch the inverter spent disagreeing can be marked.
+    `since` is the rule's left edge: anything older is off the scale. Each
+    lane also carries whether the grid was there, so a SUB stretch the pack
+    ended up carrying -- an outage -- can be told from the plan working.
+
+    >>> def _behind(*a, **k):
+    ...     return [(l["from"], l["to"], l["want"], l["actual"]) for l in lanes_behind(*a, **k)]
+    >>> _behind([{"at": "00:00", "want": "SBU", "current": "SUB"},
+    ...          {"at": "07:30", "want": "SBU", "current": "SBU"}], 600)
+    [(0, 450, 'SBU', 'SUB'), (450, 600, 'SBU', 'SBU')]
+    >>> _behind([{"at": "09:00", "want": "SBU", "current": None}], 600)
+    [(540, 600, 'SBU', None)]
+    >>> lanes_behind(None, 600), lanes_behind([{"at": "bad"}], 600)
+    ([], [])
+
+    Yesterday's marks land where they belong, and the window's left edge
+    trims what is off the scale::
+
+        >>> _behind([{"at": "2026-09-21T17:00", "want": "SUB", "current": "SUB"},
+        ...          {"at": "2026-09-22T02:00", "want": "SBU", "current": "SBU"}],
+        ...         3 * 60, dt.date(2026, 9, 22), since=-6 * 60)
+        [(-360, 120, 'SUB', 'SUB'), (120, 180, 'SBU', 'SBU')]
+
+    The grid rides along::
+
+        >>> [(l["actual"], l["grid"]) for l in lanes_behind(
+        ...     [{"at": "20:00", "want": "SUB", "current": "SUB", "grid": True},
+        ...      {"at": "21:00", "want": "SUB", "current": "SUB", "grid": False}], 22 * 60)]
+        [('SUB', True), ('SUB', False)]
+    """
+    out: list[dict] = []
+    for mark in marks or []:
+        if not isinstance(mark, dict):
+            continue
+        start = _mark_min(mark.get("at"), today)
+        if start is None or start > now_min:
+            continue
+        if out:
+            out[-1]["to"] = start
+        out.append({"from": start, "to": int(now_min), "want": mark.get("want"),
+                    "actual": mark.get("current"), "grid": mark.get("grid"),
+                    "src": mark.get("src")})
+    if since is not None:
+        out = [lane for lane in out if lane["to"] > since]
+        if out:
+            out[0]["from"] = max(out[0]["from"], int(since))
+    return [lane for lane in out if lane["to"] > lane["from"]]
+
+
+# --------------------------------------------------------------------------
 # doctest fixture
 # --------------------------------------------------------------------------
 

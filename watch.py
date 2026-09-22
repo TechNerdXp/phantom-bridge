@@ -28,6 +28,22 @@ a round gauge, and one line of status under the board. The day's figures
 and the cable bar that used to sit there live in the history window (click
 "history >" at the bottom, or the tray menu); the arrows carry the limits.
 
+Under the board is the day's rule: one horizontal 24-hour scale carrying
+the one thing the board cannot show -- which way the house is pointed and
+when that changes. It runs **sunrise to sunrise**, sunrise being the
+turnaround: the moment the pack stops falling and the sun starts pushing
+it back up. That is the plan's own day, so the night is one stretch rather
+than two halves either side of midnight, and both cuts are on the scale.
+
+Left of the now marker is the record, what the inverter was actually set
+to, from the tape the collector publishes; right of it is the plan, the
+same colours in a lighter key. The
+cuts are the two switches of the owner's rule: SBU -> SUB at dusk, when the
+pack becomes the outage reserve, and SUB -> SBU at the release. A time the
+plan has not worked out yet wears a "~"; a stretch nothing can put a clock
+on (the floor hold) fades out instead of claiming one; a red underline
+marks where the inverter disagreed with the plan.
+
 GDI+ (gdiplus.dll, Windows XP and later) draws the arrows, ring and icons
 anti-aliased. It is loaded lazily and, if it is missing, plain GDI draws the
 same shapes without the smoothing -- the window never fails to open.
@@ -248,12 +264,23 @@ LINE      = (0x2C, 0x32, 0x3E)
 INK       = (0xE8, 0xEC, 0xF3)
 INK_DIM   = (0x8B, 0x93, 0xA3)
 INK_FAINT = (0x55, 0x5C, 0x6A)
-SOLAR     = (0xF2, 0xB1, 0x34)
-GRID      = (0x4F, 0x9F, 0xE8)
-BATT      = (0x4F, 0xC2, 0x7B)
+# Whose power it is, not what the wire is (owner, 2026-09-22): the sun is
+# green, the pack is teal because it is yesterday's sun -- nothing here
+# charges from the grid -- and the utility is orange, the one you pay for.
+# The house keeps its own violet. Used by the watch screen, the rule and the
+# history window alike; the tray icon has its own ladder in tray.py, which
+# matches RouterOps and must not follow this.
+SOLAR     = (0x52, 0xC8, 0x6E)
+GRID      = (0xE0, 0x82, 0x35)
+BATT      = (0x35, 0xC2, 0xAE)
 LOAD      = (0xA7, 0x8B, 0xFA)
 WARN      = (0xF2, 0x9A, 0x3E)
 BAD       = (0xE2, 0x57, 0x4C)
+
+# The rule borrows those three and adds one: blue is the pack carrying the
+# house inside a SUB stretch, which only happens when the grid has gone out
+# -- the setting says grid, the outage says otherwise.
+LANE_OUTAGE = (0x4F, 0x9F, 0xE8)
 
 
 def cref(rgb) -> int:
@@ -269,7 +296,7 @@ def argb(rgb, alpha=255) -> int:
 # The header colour follows flow.source -- who is carrying the house -- not
 # QMOD's letter. Mapping B to "ON BATTERY" was the screen's one real lie: the
 # unit sits in B all day on solar with the pack charging.
-SOURCE_COLOURS = {"solar": SOLAR, "solar+battery": WARN, "battery": WARN,
+SOURCE_COLOURS = {"solar": SOLAR, "solar+battery": BATT, "battery": BATT,
                   "grid": GRID, "fault": BAD}
 
 UI_FACE, MONO_FACE = "Segoe UI", "Consolas"
@@ -521,7 +548,8 @@ class WatchWindow:
 
     CLASS = "PhantomBridgeWatch"
     TITLE = "Phantom II"
-    W, H = 640, 590
+    W, H = 640, 640
+    DAY_MIN = 24 * 60
 
     def __init__(self, force_gdi: bool = False):
         self.s = 1.0                                # display scale
@@ -764,6 +792,163 @@ class WatchWindow:
         # a thin bright meniscus where the liquid meets the tank
         cv.lines(top_edge[1:-1], INK, 1.0, alpha=70) if frac < 0.99 else None
 
+    # -- the 24-hour rule: the day's lanes, and where the plan cuts them -------
+    #
+    # One horizontal rule under the board, running **sunrise to sunrise**
+    # (owner, 2026-09-22) -- from the turnaround, where the sun starts
+    # lifting the pack, to the next one. That is the plan's own day: the
+    # night is one stretch instead of being sawn in half at midnight, and
+    # both cuts fall on the scale instead of off the right edge.
+    #
+    # Left of the now marker it is the record -- what the inverter was
+    # actually set to, from the tape the collector publishes -- and right of
+    # it the plan, the same wash in a lighter key. The two cuts a day are
+    # the whole point of it: SBU -> SUB at dusk, when the pack becomes the
+    # outage reserve, and SUB -> SBU at the release. A time the plan has not
+    # worked out yet (tonight's release, before the hold begins) wears a
+    # "~"; a hold with no clock at all (the floor) fades out instead of
+    # claiming one. Green is the pack carrying the house, blue the grid,
+    # exactly as the pillars above use them.
+
+    def _lane_x(self, x0, w, minute, origin=0):
+        into = max(0.0, min(float(self.DAY_MIN), float(minute) - origin))
+        return x0 + w * into / self.DAY_MIN
+
+    @staticmethod
+    def _first_after(minute, origin):
+        """The first occurrence of a time of day at or after `origin`."""
+        m = int(minute)
+        while m < origin:
+            m += 24 * 60
+        while m - 24 * 60 >= origin:
+            m -= 24 * 60
+        return m
+
+    @staticmethod
+    def _lane_colour(want, grid=None, src=None):
+        """Whose power the house was on over that stretch -- the setting
+        says who was *meant* to carry it, the source says who did. SBU is
+        green while the sun carries it and teal when the pack does; SUB is
+        orange on the utility and blue when the grid failed and the pack
+        carried it anyway. With no source (the plan ahead of now) the
+        setting's own colour stands in."""
+        if src == "solar":
+            return SOLAR
+        if src == "grid":
+            return GRID
+        if src == "battery":
+            return LANE_OUTAGE if want == "SUB" else BATT
+        if want == "SBU":
+            return BATT
+        if want == "SUB":
+            return LANE_OUTAGE if grid is False else GRID
+        return INK_FAINT
+
+    @staticmethod
+    def _lane_cuts(past, ahead):
+        """The switch points worth a mark: where the setting actually
+        changed today, and where the plan says it will change next."""
+        cuts, last = [], None
+        for lane in past:
+            shown = lane.get("actual") or lane.get("want")
+            if shown and shown != last:
+                if last is not None:
+                    cuts.append({"at": lane["from"], "ahead": False, "sure": True})
+                last = shown
+        for i, lane in enumerate(ahead):
+            if i == 0:
+                continue                      # that edge is the now marker
+            prev = ahead[i - 1]
+            if prev.get("open"):
+                continue                      # nothing says when that one ends
+            cuts.append({"at": lane["from"], "ahead": True, "sure": bool(prev.get("sure"))})
+        return cuts
+
+    def _lanes_shapes(self, cv, x0, y, w, h, past, ahead, now_min, sun=None,
+                      origin=0) -> None:
+        cv.rect(x0, y, w, h, PANEL, alpha=235, outline=LINE, width=1.0)
+        if sun and sun[0] is not None and sun[1] is not None:
+            rise = self._first_after(sun[0], origin)
+            a = self._lane_x(x0, w, rise, origin)
+            b = self._lane_x(x0, w, self._first_after(sun[1], rise), origin)
+            if b > a:
+                cv.rect(a, y, b - a, h, SOLAR, alpha=22)     # the sun's window
+        for lane in past:
+            shown = lane.get("actual") or lane.get("want")
+            x1 = self._lane_x(x0, w, lane["from"], origin)
+            x2 = self._lane_x(x0, w, lane["to"], origin)
+            if not shown or x2 <= x1:
+                continue
+            cv.rect(x1, y, x2 - x1, h,
+                    self._lane_colour(shown, lane.get("grid"), lane.get("src")), alpha=210)
+            if lane.get("actual") and lane.get("want") != lane["actual"]:
+                # the plan wanted the other one: the inverter's own timer
+                # (menu 99), a hand on the panel, or the autopilot advisory
+                cv.rect(x1, y + h - 3, x2 - x1, 3, BAD, alpha=255)
+        for lane in ahead:
+            x1 = self._lane_x(x0, w, lane["from"], origin)
+            x2 = self._lane_x(x0, w, lane["to"], origin)
+            if x2 <= x1:
+                continue
+            colour = self._lane_colour(lane["want"])
+            alpha = 80 if lane.get("sure") else 48
+            if lane.get("open"):
+                steps = 10
+                for i in range(steps):
+                    cv.rect(x1 + (x2 - x1) * i / steps, y, (x2 - x1) / steps + 0.6, h,
+                            colour, alpha=int(alpha * (1 - i / steps)))
+            else:
+                cv.rect(x1, y, x2 - x1, h, colour, alpha=alpha)
+        for cut in self._lane_cuts(past, ahead):
+            x = self._lane_x(x0, w, cut["at"], origin)
+            cv.lines([(x, y - 3), (x, y + h + 3)],
+                     INK if cut["ahead"] and cut["sure"] else INK_DIM, 1.2)
+        xn = self._lane_x(x0, w, now_min, origin)
+        cv.lines([(xn, y - 6), (xn, y + h + 4)], INK, 1.4)
+        cv.polygon([(xn - 4, y - 11), (xn + 4, y - 11), (xn, y - 5)], INK)
+
+    def _lanes_text(self, hdc, x0, y, w, h, past, ahead, now_min, origin=0) -> None:
+        label_y = y + h + 3
+        for lane in past:
+            shown = lane.get("actual") or lane.get("want")
+            x1 = self._lane_x(x0, w, lane["from"], origin)
+            x2 = self._lane_x(x0, w, lane["to"], origin)
+            if shown and x2 - x1 >= 32:
+                self._text(hdc, shown, x1, y + 1, x2 - x1, h - 2, BG, 9, 700, DT_CENTER)
+        for lane in ahead:
+            x1 = self._lane_x(x0, w, lane["from"], origin)
+            x2 = self._lane_x(x0, w, lane["to"], origin)
+            if x2 - x1 >= 32:
+                self._text(hdc, lane["want"], x1, y + 1, x2 - x1, h - 2,
+                           INK_DIM if lane.get("sure") else INK_FAINT, 9, 700, DT_CENTER)
+        # The times, in the order they matter: where the plan cuts next,
+        # then where the day already turned, then whatever hours are left
+        # over. A label is dropped rather than drawn over its neighbour.
+        taken = [self._lane_x(x0, w, now_min, origin)]
+        tail = ahead[-1] if ahead else None
+        if tail and tail["to"] > origin + self.DAY_MIN and not tail.get("open"):
+            # past the next sunrise, off the end of the scale
+            self._mono(hdc, ("" if tail.get("sure") else "~") + policy.fmt_hm(tail["to"]) + " >",
+                       x0 + w - 62, label_y, 62, 14,
+                       INK if tail.get("sure") else INK_DIM, 10, DT_RIGHT)
+            taken.append(x0 + w - 30)
+        cuts = self._lane_cuts(past, ahead)
+        for cut in sorted(cuts, key=lambda c: not c["ahead"]):
+            x = self._lane_x(x0, w, cut["at"], origin)
+            if any(abs(x - other) < 26 for other in taken):
+                continue
+            taken.append(x)
+            colour = (INK if cut["sure"] else INK_DIM) if cut["ahead"] else INK_FAINT
+            self._mono(hdc, ("" if cut["sure"] else "~") + policy.fmt_hm(cut["at"]),
+                       x - 26, label_y, 52, 14, colour, 10)
+        # the round hours that fall inside the window, wherever they land
+        for hour in (0, 6, 12, 18):
+            at = self._first_after(hour * 60, origin)
+            x = self._lane_x(x0, w, at, origin)
+            if any(abs(x - other) < 30 for other in taken) or x >= x0 + w - 12:
+                continue
+            self._mono(hdc, "%02d" % hour, x - 14, label_y, 28, 14, INK_FAINT, 9)
+
     # -- painting ---------------------------------------------------------
 
     def _paint(self, hdc, dev_w, dev_h):
@@ -837,8 +1022,24 @@ class WatchWindow:
 
         # The day's figures and the cable bar used to sit under the board.
         # They live in the history window now (the arrows carry the limits),
-        # so this view is the four dimensions and one line of status.
-        self._strip_top = height - 34
+        # so this view is the four dimensions, the day's rule and one line
+        # of status. A click anywhere in that bottom band opens the history.
+        rule_x, rule_w, rule_y, rule_h = pad, width - pad * 2, height - 78, 16
+        self._strip_top = rule_y - 12
+
+        # the rule's own clock is the wall clock, not the sample's: the plan
+        # is about the time of day, and a stale link must not freeze it
+        site_now = bridge.now_site()
+        now_min = site_now.hour * 60 + site_now.minute + site_now.second / 60.0
+        plan = state.get("policy") or {}
+        turnaround = policy.parse_hm(plan.get("turnaround"))
+        # sunrise to sunrise, so the night is one stretch and both cuts are
+        # on the scale; midnight to midnight only if there is no turnaround
+        rule_origin = policy.window_origin(turnaround, now_min) if turnaround is not None else 0
+        past = policy.lanes_behind((plan.get("tape") or {}).get("marks"), now_min,
+                                   site_now.date(), since=rule_origin)
+        ahead = policy.lanes_from(plan, now_min)
+        sun = (turnaround, policy.parse_hm(plan.get("dusk")))
 
         # -- each leg against its own limit (see config, "Load side"); the
         # tray icon judges from the same function, so they never disagree
@@ -871,6 +1072,8 @@ class WatchWindow:
             self._icon_grid(cv, gx, side_icon_y, grid > 1 or flow.get("grid_present", False))
             self._icon_home(cv, hx, side_icon_y, load > 1)
             self._gauge(cv, cx, batt_cy, batt_r, soc, batt_colour)
+            self._lanes_shapes(cv, rule_x, rule_y, rule_w, rule_h, past, ahead, now_min,
+                               sun, rule_origin)
             cv.rect(pad, height - 40, width - pad * 2, 1, LINE)
         finally:
             cv.close()
@@ -953,7 +1156,12 @@ class WatchWindow:
             self._mono(hdc, "% is the inverter's voltage estimate",
                        cx - 150, by + 66, 300, 16, INK_FAINT, 10)
 
-        # -- the status line, and the way into the history
+        # -- the day's rule, and under it the status line and the way in
+        self._lanes_text(hdc, rule_x, rule_y, rule_w, rule_h, past, ahead, now_min,
+                         rule_origin)
+        if not (past or ahead):
+            self._text(hdc, "no plan published", rule_x, rule_y + 1, rule_w, rule_h - 2,
+                       INK_FAINT, 9, 400, DT_CENTER)
         sy = height - 28
         self._mono(hdc, "history >", width - pad - 90, sy, 90, 18, INK_FAINT, 10, DT_RIGHT)
         warns = state.get("warnings") or []

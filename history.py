@@ -66,7 +66,7 @@ import insights
 import watch
 from days import DAYS_DIR, REFRESH_S, SLIM_KEYS, DayLog, DayStore  # noqa: F401
 from watch import (BAD, BATT, BG, GRID, INK, INK_DIM, INK_FAINT, LINE, LOAD,
-                   PANEL, SOLAR, WARN, DT_CENTER, DT_LEFT, DT_RIGHT, Canvas,
+                   PANEL, SOLAR, DT_CENTER, DT_LEFT, DT_RIGHT, Canvas,
                    user32)
 
 WM_KEYDOWN, WM_LBUTTONDOWN = 0x0100, 0x0201
@@ -462,7 +462,7 @@ class HistoryWindow(watch.WatchWindow):
             cv.lines([(cx0, bmid), (cx0 + cw, bmid)], LINE, 1.0)
             for start, end in _runs(cols, "on_batt"):
                 cv.rect(cx0 + start, main_y, max(1, end - start), batt_y + batt_h - main_y,
-                        WARN, alpha=34)
+                        BATT, alpha=34)
             for start, end in _runs(cols, "outage"):
                 cv.rect(cx0 + start, main_y, max(1, end - start), batt_y + batt_h - main_y,
                         BAD, alpha=60)
@@ -485,7 +485,7 @@ class HistoryWindow(watch.WatchWindow):
                     cv.rect(x, bmid - h, 1, h, BATT, alpha=220)
                 if c["dis"] > 0:
                     h = (batt_h / 2 - 2) * min(c["dis"], bmax) / bmax
-                    cv.rect(x, bmid, 1, h, WARN, alpha=220)
+                    cv.rect(x, bmid, 1, h, BATT, alpha=220)
             cv.rect(pad, facts_y - 14, width - pad * 2, 1, LINE)
             self._profile_shapes(cv, cx0, prof_y, cw, prof_h, day.get("hours") or [])
         finally:
@@ -502,11 +502,11 @@ class HistoryWindow(watch.WatchWindow):
             self._mono(hdc, f"{100 * frac:.0f}%", cx0 + cw + 4, y_soc(100 * frac) - 7,
                        40, 14, INK_FAINT, 11, DT_LEFT)
         self._mono(hdc, f"+{bmax:.0f}", pad - 6, batt_y - 2, 46, 14, BATT, 11, DT_RIGHT)
-        self._mono(hdc, f"-{bmax:.0f}", pad - 6, batt_y + batt_h - 12, 46, 14, WARN, 11, DT_RIGHT)
+        self._mono(hdc, f"-{bmax:.0f}", pad - 6, batt_y + batt_h - 12, 46, 14, BATT, 11, DT_RIGHT)
         self._mono(hdc, "W", pad - 6, bmid - 7, 46, 14, INK_FAINT, 11, DT_RIGHT)
         self._legend(hdc, cx0, main_y - 18, [("solar", SOLAR), ("house", LOAD),
                                              ("grid (derived)", GRID), ("SOC", INK),
-                                             ("on battery", WARN), ("grid out", BAD)])
+                                             ("on battery", BATT), ("grid out", BAD)])
         if not samples:
             self._text(hdc, "No samples logged for this day.", cx0, main_y + main_h / 2 - 10,
                        cw, 20, INK_DIM, 12, 400, DT_CENTER)
@@ -609,7 +609,7 @@ class HistoryWindow(watch.WatchWindow):
                     cv.rect(x + slot * 0.1 + j * bw, bars_y + bars_h - h, bw - 1, h, colour, alpha=210)
                     if j == 1 and out > 0:
                         hh = bars_h * min(out, kmax * 1000) / (kmax * 1000)
-                        cv.rect(x + slot * 0.1 + j * bw, bars_y + bars_h - hh, bw - 1, hh, WARN, alpha=230)
+                        cv.rect(x + slot * 0.1 + j * bw, bars_y + bars_h - hh, bw - 1, hh, BATT, alpha=230)
             pts = [(cx0 + slot * i + slot / 2,
                     bars_y + bars_h - bars_h * min(v, kmax * 1000) / (kmax * 1000))
                    for i, v in enumerate(typical) if v]
@@ -622,7 +622,7 @@ class HistoryWindow(watch.WatchWindow):
 
         unit = "MONTH" if self.tab == "year" else "DAY"
         self._text(hdc, f"BY {unit}", cx0, bars_y - 24, 120, 18, INK_FAINT, 12, 700)
-        legend = [("solar kWh", SOLAR), ("house kWh", LOAD), ("of which from battery", WARN)]
+        legend = [("solar kWh", SOLAR), ("house kWh", LOAD), ("of which from battery", BATT)]
         if typical:
             legend.append(("7-day typical solar", INK_DIM))
         self._legend(hdc, cx0 + 80, bars_y - 22, legend)
@@ -691,9 +691,9 @@ class HistoryWindow(watch.WatchWindow):
         low = f"{rv['soc_low_median']:.0f}%" if rv.get("soc_low_median") is not None else "--"
         reg.append((f"pack fullest ~{rv['full_at']}, lowest ({low}) ~{rv['low_at']}", BATT))
         reg.append(("on battery mostly " + _hour_runs(rv["batt_hours"]) + "h"
-                    if rv["batt_hours"] else "rarely on battery for a whole hour", WARN))
+                    if rv["batt_hours"] else "rarely on battery for a whole hour", BATT))
         reg.append((f"{rv['episodes_priority']} episodes by priority (grid present), "
-                    f"{rv['episodes_outage']} in outages", WARN))
+                    f"{rv['episodes_outage']} in outages", BATT))
         if rv["implied"]:
             med, lo, hi, n = rv["implied"]
             reg.append((f"implied pack {med / 1000:.1f} kWh per 100% SOC, {n} episodes "
@@ -739,7 +739,7 @@ class HistoryWindow(watch.WatchWindow):
             x = x0 + slot * i
             share = hh.get("on_battery") or 0
             if share > 0:
-                cv.rect(x, y0 + h - h * share, slot, h * share, WARN, alpha=45)
+                cv.rect(x, y0 + h - h * share, slot, h * share, BATT, alpha=45)
             absent = hh.get("grid_absent") or 0
             if absent > 0:
                 cv.rect(x, y0 + h - h * absent, slot, h * absent, BAD, alpha=60)
@@ -769,7 +769,7 @@ class HistoryWindow(watch.WatchWindow):
                 tick = (f"{v / 1000:.1f}kW" if wmax >= 1000 else f"{v:.0f}W") if v else "0"
                 self._mono(hdc, tick, pad - 6, y0 + h - h * frac - 7, 46, 14, INK_FAINT, 11, DT_RIGHT)
         self._legend(hdc, x0 + w - 500, y0 - 22, [("house avg", LOAD), ("solar avg", SOLAR),
-                                                  ("share on battery", WARN), ("grid out", BAD)])
+                                                  ("share on battery", BATT), ("grid out", BAD)])
         if not hours or not any(hh.get("n") for hh in hours):
             self._text(hdc, "nothing logged", x0, y0 + h / 2 - 10, w, 20, INK_FAINT, 11, 400, DT_CENTER)
 
@@ -787,7 +787,7 @@ class HistoryWindow(watch.WatchWindow):
             tail = " open" if ep.get("open") else " cut" if ep.get("truncated") else ""
             line = (f"{ep['start']}-{ep['end']} {_hours(ep['duration_s']):>7} {ep['wh']:>6,} Wh "
                     f"{ep['avg_w']:>5,} W  {soc:<7} {pack}{tail}")
-            colour = BAD if ep["kind"] == "outage" else WARN
+            colour = BAD if ep["kind"] == "outage" else BATT
             self._fill(hdc, x, yy + 5, 4, 9, colour)
             self._mono(hdc, line, x + 10, yy, w - 20, 18, INK_DIM, 12, DT_LEFT)
         if len(eps) > rows:

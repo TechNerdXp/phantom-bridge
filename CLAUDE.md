@@ -152,8 +152,44 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    tank SOC gauge that shows the empty part too, and one line of status.
    The day's figures and the cable bar were under the board and were
    **removed on request (2026-09-20)**: they live in the history window,
-   and the arrows carry the limits. Keep this view to the four dimensions.
-   The header is the source verdict, never the raw mode.
+   and the arrows carry the limits. The header is the source verdict,
+   never the raw mode.
+   Under the board, and the one thing added back since (**on request,
+   2026-09-22**), is **the day's rule**: a horizontal 24-hour scale
+   carrying what the four pillars cannot -- which way the house is
+   pointed and when that changes. It runs **sunrise to sunrise** (owner,
+   same day), sunrise being the turnaround -- the minute the pack stops
+   falling and the sun pushes it up again, which yesterday's lowest SOC
+   places from a single point of rise. That is the plan's own day: the
+   night is one stretch rather than two halves either side of midnight,
+   and both cuts land on the scale instead of off the right edge.
+   `policy.window_origin` gives the left edge and everything is drawn as
+   minutes from today's midnight, which run negative into yesterday and
+   past 1440 into tomorrow. Left of the now marker
+   is the record (the `policy.tape` the collector publishes, what the
+   inverter was actually set to); right of it the plan, the same colours
+   lighter. **A lane is coloured by who carried the house, not by the
+   setting** (owner, 2026-09-22): SBU is green on the sun and teal on the
+   pack, SUB is orange on the utility and blue when the grid failed and
+   the pack carried it anyway. The letters in the lane stay the setting,
+   so it says both. Ahead of now there is no source, so the plan wears
+   the setting's colour. The source and grid presence ride on the tape,
+   settled 5 min (`SETTLE_S`) against the dawn flapping and the clouds,
+   and a pack under `BURST_SHARE` of the house with the sun up still
+   reads as solar. The palette itself is whose power it is, not what the
+   wire is -- green sun, teal pack (yesterday's sun), orange utility,
+   violet house -- and it is shared with the history window. The tray
+   icon keeps its own ladder, which matches RouterOps. The sun's window
+   is a faint wash under all of it.
+   The cuts are the owner's two switches, labelled with their times: a
+   time the plan has not worked out yet wears a `~` (the latest-release
+   clock standing in), one past midnight is labelled at the right edge
+   with a `>`, the floor hold fades out rather than claim a clock it does
+   not have, and a red underline marks where the inverter disagreed with
+   the plan. `policy.lanes_ahead` / `lanes_behind` do the arithmetic,
+   doctested; `watch._lanes_shapes` / `_lanes_text` draw it. Keep the
+   board itself to the four dimensions -- the rule is a fifth element
+   under it, not a fifth pillar in it.
    Every arrow is coloured by its own limit -- grid and home against the
    7/29 (`GRID_LINE_RATING_A`, `LOAD_LINE_RATING_A`), battery against the
    pack (`BATTERY_CONTINUOUS_A` amber, `BATTERY_MAX_A` red) -- and blinks
@@ -231,7 +267,12 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    reads `logs/state.json` and writes nothing to the inverter): the
    `policy` payload is a contract -- `want`, `phase`, `release_at`,
    `turnaround`, `usable_wh`, `need_wh`, `floor`, `current`, plus
-   `until`, `headroom_wh`, `request` -- add keys, never rename. The
+   `until`, `headroom_wh`, `request`, and `tape`, the lane record
+   (`{date, marks: [{at, want, current}]}`, one mark per change in the
+   plan or in the setting the inverter is actually on, `at` a dated ISO
+   minute kept 36 h -- it has to outlive midnight because the rule's
+   night does -- and seeded from the last published state so a restart
+   keeps the day behind it) -- add keys, never rename. The
    release keeps `AUTO_RELEASE_MARGIN_WH` (300 Wh) above the expected
    draw and publishes the rest as `headroom_wh`, the Wh Switch-X may spend
    on bursts after the release. A request file, `logs/request.json`
