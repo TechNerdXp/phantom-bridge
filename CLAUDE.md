@@ -35,6 +35,15 @@ against the unit. What follows is measured unless it says otherwise.
 - Charger source priority is **3 (Solar only)** with max utility charge
   current **2 A** — the pack is configured to charge from PV essentially
   alone. Worth knowing before touching anything charge-related.
+- The pack was **sold as 5 kWh and delivers about 2 kWh** (the owner,
+  2026-09-22; Oracle #29 is the open investigation). The on-battery
+  episodes read the inverter's voltage-derived SOC and that scale implies
+  the sold figure (4.8 kWh per 100 % over the first five), so it is not
+  evidence either way. Until the pack is measured, every derived pack
+  figure is capped at `BATTERY_PACK_WH_CAP` (2000 Wh): the data may say
+  less, never more. `BATTERY_SOLD_WH` is only for the reports' comparison
+  line. A bigger measured pack raises the cap; do not raise it on the
+  SOC scale alone.
 - Output source priority is **2, SBU** (Solar-Battery-Utility; `QPIRI`
   field 17 -- an earlier note said 1, wrong), so the house runs from the
   battery overnight **with the grid present** (seen 2026-09-20: mode B, 9 A
@@ -206,6 +215,18 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    **Advisory by default**: `AUTO_PRIORITY = False`. It is its own gate,
    like the clock, because this is the setting the owner already flips
    twice a day; `ALLOW_WRITES` still guards everything else.
+   **Since 2026-09-22, for Switch-X** (`D:\PowerTools\switch-x`, which
+   reads `logs/state.json` and writes nothing to the inverter): the
+   `policy` payload is a contract -- `want`, `phase`, `release_at`,
+   `turnaround`, `usable_wh`, `need_wh`, `floor`, `current`, plus
+   `until`, `headroom_wh`, `request` -- add keys, never rename. The
+   release keeps `AUTO_RELEASE_MARGIN_WH` (300 Wh) above the expected
+   draw and publishes the rest as `headroom_wh`, the Wh Switch-X may spend
+   on bursts after the release. A request file, `logs/request.json`
+   (`{"want": "SUB", "until": "HH:MM", "why": "..."}`, or `ctl.py request`),
+   is phase `requested`: ahead of the plan, never past the floor, capped at
+   `AUTO_REQUEST_MAX_MIN` (60) from first sight, ignored with the grid
+   absent, ended by removing the file; it skips the dwell like the floor.
 
 What the inverter cannot give: a per-line load. It reports one combined
 output and carries **no per-line figure at all** -- there is nothing to tell

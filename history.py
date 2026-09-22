@@ -702,6 +702,10 @@ class HistoryWindow(watch.WatchWindow):
                 rated = config.BATTERY_CAPACITY_AH * 51.2
                 reg.append((f"rated {rated / 1000:.1f} kWh: implied is {med / rated * 100:.0f}% of it",
                             INK_DIM))
+            elif config.BATTERY_SOLD_WH:
+                reg.append((f"sold as {config.BATTERY_SOLD_WH / 1000:.1f} kWh; the plan counts "
+                            f"{config.BATTERY_PACK_WH_CAP / 1000:.1f} kWh, what it delivers",
+                            INK_DIM))
         else:
             reg.append(("implied pack: no closed episode with a 5%+ SOC drop yet", INK_FAINT))
         reg.append(("SOC is the inverter's voltage estimate; Wh are measured", INK_FAINT))

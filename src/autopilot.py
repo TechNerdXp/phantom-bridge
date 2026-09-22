@@ -11,6 +11,12 @@ wheel.
 
 Everything it learns each cycle is returned as a small dict that
 bridge.write_state publishes as `policy` in logs/state.json.
+
+That payload is a CONTRACT. Switch-X (D:/PowerTools/switch-x) reads it
+instead of recomputing the night, and a renamed key breaks it quietly.
+Stable keys: want, phase, release_at, turnaround, usable_wh, need_wh,
+floor, current -- plus, since 2026-09-22, until, headroom_wh and request.
+Add keys freely; never rename or drop one.
 """
 from __future__ import annotations
 
@@ -35,6 +41,7 @@ def profile_kwargs() -> dict:
         "pack_wh": config.BATTERY_PACK_WH,
         "capacity_ah": config.BATTERY_CAPACITY_AH,
         "fallback_pack_wh": config.AUTO_FALLBACK_PACK_WH,
+        "pack_cap_wh": config.BATTERY_PACK_WH_CAP,
         "fallback_efficiency": config.AUTO_EFFICIENCY_FALLBACK,
     }
 
@@ -61,7 +68,10 @@ class Autopilot:
     def __init__(self, log, initial_priority: int | None):
         self.log = log
         self.store = days.DayStore()
-        self.governor = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME)
+        self.governor = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
+                                        margin_wh=config.AUTO_RELEASE_MARGIN_WH,
+                                        request_max_min=config.AUTO_REQUEST_MAX_MIN)
+        self.last_request_key = None
         self.profile: policy.Profile | None = None
         self._building: dt.date | None = None
         self.current = initial_priority          # QPIRI output_source_prio
@@ -109,8 +119,15 @@ class Autopilot:
         prof = self.profile
         soc = analysis.get("batt_soc")
         naive = now.replace(tzinfo=None)
-        decision = self.governor.decide(prof, naive, soc)
+        request = policy.parse_request(bridge.read_request(), naive)
+        decision = self.governor.decide(prof, naive, soc, request=request,
+                                        grid_present=bool(analysis.get("grid_present", True)))
 
+        req_key = (decision.request or {}).get("state"), request.key if request else None
+        if req_key != self.last_request_key:
+            self.last_request_key = req_key
+            if decision.request:
+                self.log({"event": "priority-request", **decision.request})
         key = (decision.want, decision.phase)
         if key != self.last_key:
             self.last_key = key
@@ -120,8 +137,10 @@ class Autopilot:
                       "enabled": bool(config.AUTO_PRIORITY),
                       "release_at": decision.release_at.strftime("%H:%M")
                       if decision.release_at else None,
+                      "until": decision.until.strftime("%H:%M") if decision.until else None,
                       "need_wh": round(decision.need_wh),
-                      "usable_wh": round(decision.usable_wh)})
+                      "usable_wh": round(decision.usable_wh),
+                      "headroom_wh": round(decision.headroom_wh)})
 
         # What is the inverter actually set to? Its own timer, or a hand on
         # the panel, can change it under us.
@@ -138,18 +157,25 @@ class Autopilot:
         if config.AUTO_PRIORITY and conn is not None:
             self._maybe_write(conn, decision)
 
+        # The contract with Switch-X -- see the module docstring. Add, never
+        # rename.
         payload = {
             "enabled": bool(config.AUTO_PRIORITY),
             "want": decision.name, "want_code": decision.want,
             "current": policy.NAMES.get(self.current), "current_code": self.current,
             "phase": decision.phase, "reason": decision.reason,
             "release_at": decision.release_at.strftime("%H:%M") if decision.release_at else None,
+            "until": decision.until.strftime("%H:%M") if decision.until else None,
+            "request": decision.request,
             "turnaround": policy.fmt_hm(prof.turnaround_min),
             "dusk": policy.fmt_hm(prof.dusk_min),
             "pack_wh": round(prof.pack_wh),
+            "pack_wh_basis": prof.notes.get("pack_wh"),
             "efficiency": round(prof.efficiency, 2),
             "usable_wh": round(decision.usable_wh),
             "need_wh": round(decision.need_wh),
+            "headroom_wh": round(decision.headroom_wh),
+            "margin_wh": config.AUTO_RELEASE_MARGIN_WH,
             "floor": config.AUTO_SOC_FLOOR, "resume": config.AUTO_SOC_RESUME,
             "floor_hold": decision.floor_hold,
             "profile_days": prof.days,
@@ -174,7 +200,10 @@ class Autopilot:
         now = time.time()
         if now < self.backoff_until:
             return
-        protective = decision.phase == "floor"
+        # The floor is protective and a request is an ask for now, not in
+        # ten minutes; both skip the dwell. A request is bounded by its own
+        # cap, so it cannot turn the dwell into a flap.
+        protective = decision.phase in ("floor", "requested")
         if not protective and now - self.last_write_at < config.AUTO_MIN_DWELL_S:
             return
         result = bridge.set_output_priority(conn, decision.want, self.log,

@@ -418,6 +418,11 @@ def render_summary(days: list[dict]) -> str:
             out.append(f"  rated pack       {rated / 1000:.1f} kWh "
                        f"({config.BATTERY_CAPACITY_AH:.0f} Ah x 51.2 V) -- "
                        f"implied is {statistics.median(implied) / rated * 100:.0f}% of it")
+        elif config.BATTERY_SOLD_WH:
+            out.append(f"  sold as          {config.BATTERY_SOLD_WH / 1000:.1f} kWh -- "
+                       f"implied is {statistics.median(implied) / config.BATTERY_SOLD_WH * 100:.0f}% of it;"
+                       f" the plan caps the pack at {config.BATTERY_PACK_WH_CAP / 1000:.1f} kWh"
+                       f" (what it delivers in practice, Oracle #29)")
         else:
             out.append("  rated pack       set config.BATTERY_CAPACITY_AH to compare")
     out.append("  soc caveat       the SOC is the inverter's voltage estimate; watt-hours "

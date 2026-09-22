@@ -132,6 +132,18 @@ TRUST_SOC = False
 BATTERY_CAPACITY_AH = None      # e.g. 200 -- enables a runtime estimate
 BATTERY_USABLE_FRACTION = 0.8
 
+# What the pack was sold as, and what it delivers. Sold as 5 kWh; in
+# practice about 2 kWh come out of it (the owner's experience, 2026-09-22,
+# and roughly half the promised backup -- Oracle #29, open). The on-battery
+# episodes read the inverter's voltage-derived SOC, and that scale implies
+# the sold figure (4.8 kWh per 100 % over the first episodes), so it is not
+# evidence either way. Until the pack is measured properly, every derived
+# pack figure is CAPPED at the practical number: the data may say less,
+# never more. BATTERY_SOLD_WH is only for the reports' "implied is X % of
+# sold" line. BATTERY_PACK_WH (below) pins the figure and skips the cap.
+BATTERY_SOLD_WH = 5000
+BATTERY_PACK_WH_CAP = 2000
+
 # Below this the grid is considered absent rather than merely sagging.
 GRID_PRESENT_VOLTS = 80.0
 
@@ -270,9 +282,27 @@ AUTO_DEFAULT_NIGHT_LOAD_W = 400
 # point), which is the right scale even though the SOC is voltage-derived,
 # because SOC points are what the floor and the release are measured in.
 # A number pins it. Falls back to BATTERY_CAPACITY_AH x 51.2, then to
-# AUTO_FALLBACK_PACK_WH.
+# AUTO_FALLBACK_PACK_WH. Whatever is derived is capped at
+# BATTERY_PACK_WH_CAP (see the Battery block); the pin is not.
 BATTERY_PACK_WH = None
 AUTO_FALLBACK_PACK_WH = 2000
+
+# The release keeps this much above the floor beyond the expected draw to
+# the turnaround. Switch-X still grants the motor's two-minute burst and
+# the cooker's five minutes on the pack after the release; without a
+# margin those land the pack on the floor before the sun. What is left
+# over is published as `headroom_wh` in the policy payload -- the Wh an
+# outside caller may spend. 300 Wh is a cooker run and a couple of motor
+# bursts on this pack.
+AUTO_RELEASE_MARGIN_WH = 300
+
+# An outside request (Switch-X writes logs/request.json: {"want": "SUB",
+# "until": "HH:MM", "why": "..."}) holds that setting ahead of the plan,
+# never past the floor rule, for at most this many minutes from when the
+# collector first saw it -- so a stuck file cannot keep the pack off all
+# night. Removing the file ends the hold. Ignored, and said so in the
+# reason, if the grid was absent when it arrived.
+AUTO_REQUEST_MAX_MIN = 60
 
 # Load watt-hours per battery watt-hour on a night episode. Derived from
 # the episodes when there are enough; this is the fallback.

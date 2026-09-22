@@ -19,10 +19,21 @@ The owner's rule (2026-09-22), which this replaces the inverter's own timer
     pack sits until the turnaround, and then until the sun has lifted it
     back over the resume level. Then SBU, the day's setting.
 
+  * A request from outside (Switch-X writes logs/request.json: want,
+    until, why) is its own phase, "requested": ahead of the plan, never
+    past the floor rule, capped in length so a stuck file cannot keep the
+    pack off all night, ignored if the grid was absent when it arrived.
+  * The release keeps a margin: the plan lets go only when what is above
+    the floor covers the expected draw AND the margin, so the bursts
+    Switch-X grants after the release (the motor, the cooker) do not push
+    the pack to the floor before the turnaround. What is left over is
+    published as headroom.
+
 Pure: no link, no files, no clock of its own. build_profile() turns day
 analyses (insights.analyse_day, via days.DayStore) into a Profile; a
-Governor turns a Profile, the time and the SOC into a Decision. Doctested.
-Time-of-day values are minutes after midnight, site time.
+Governor turns a Profile, the time, the SOC and any Request into a
+Decision. Doctested. Time-of-day values are minutes after midnight, site
+time.
 """
 from __future__ import annotations
 
@@ -105,6 +116,7 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
                   dusk_fraction: float = 0.25, pack_wh: float | None = None,
                   capacity_ah: float | None = None,
                   fallback_pack_wh: float = 2000.0,
+                  pack_cap_wh: float | None = None,
                   fallback_efficiency: float = 0.88) -> Profile:
     """Read the figures out of day analyses, most recent first.
 
@@ -113,6 +125,12 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     yesterday"); the whole list gives the hourly load, the pack size the
     episodes imply and the battery-to-load efficiency. Anything missing
     falls back to the defaults, and `notes` says which.
+
+    `pack_cap_wh` is the practical ceiling on a derived pack figure: the
+    episodes read the inverter's voltage-derived SOC, which on this site
+    implies the sold 5 kWh while the pack delivers about 2 kWh in practice
+    (Oracle #29). The data may say less than the cap, never more. An
+    explicit `pack_wh` pins the figure and is not capped.
 
     >>> prof = build_profile([])
     >>> prof.as_dict()["turnaround"], prof.as_dict()["dusk"], prof.pack_wh
@@ -123,6 +141,9 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     ('07:14', '17:00', 1)
     >>> prof.pack_wh, round(prof.efficiency, 2)
     (4800.0, 0.9)
+    >>> prof = build_profile([day], pack_cap_wh=2000)
+    >>> prof.pack_wh, prof.notes["pack_wh"]
+    (2000.0, 'median of 1 episodes implies 4800 Wh, capped at the practical 2000 Wh')
     >>> [prof.hourly_load_w[h] for h in (0, 3, 12, 20)]
     [300.0, 100.0, 1000.0, 500.0]
     """
@@ -187,6 +208,11 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
             pack, notes["pack_wh"] = float(capacity_ah) * NOMINAL_V, "BATTERY_CAPACITY_AH"
         else:
             pack, notes["pack_wh"] = float(fallback_pack_wh), "fallback"
+        if pack_cap_wh and pack > float(pack_cap_wh):
+            notes["pack_wh"] = "%s implies %.0f Wh, capped at the practical %.0f Wh" % (
+                notes["pack_wh"], pack, float(pack_cap_wh))
+            notes["pack_wh_uncapped"] = round(pack)
+            pack = float(pack_cap_wh)
 
     # -- efficiency: load Wh per battery Wh on night episodes
     batt = load = 0.0
@@ -300,12 +326,13 @@ def night_of(profile: Profile, now: dt.datetime) -> dt.date:
     return now.date()
 
 
-def release_time(profile: Profile, now: dt.datetime, soc, floor: float) -> dt.datetime | None:
+def release_time(profile: Profile, now: dt.datetime, soc, floor: float,
+                 margin_wh: float = 0.0) -> dt.datetime | None:
     """When the pack can be released so it reaches the floor at the turnaround.
 
     The first moment from now at which the expected draw up to the
-    turnaround fits in what is above the floor. `now` itself if it already
-    fits; None when nothing is above the floor.
+    turnaround, plus the margin, fits in what is above the floor. `now`
+    itself if it already fits; None when nothing is above the floor.
 
     >>> prof = build_profile([_fake_day("2026-09-21")])
     >>> now = dt.datetime(2026, 9, 22, 20, 0)
@@ -315,6 +342,8 @@ def release_time(profile: Profile, now: dt.datetime, soc, floor: float) -> dt.da
     '21:00'
     >>> release_time(prof, now, 30, 30) is None
     True
+    >>> release_time(prof, now, 80, 30, margin_wh=300).strftime("%H:%M")   # later
+    '23:25'
     """
     usable = usable_wh(profile, soc, floor)
     if usable <= 0:
@@ -322,7 +351,7 @@ def release_time(profile: Profile, now: dt.datetime, soc, floor: float) -> dt.da
     target = next_turnaround(profile, now)
     t = now
     while t < target:
-        if need_wh(profile, t, target) <= usable:
+        if need_wh(profile, t, target) + margin_wh <= usable:
             return t
         t += dt.timedelta(minutes=STEP_MIN)
     return target
@@ -333,9 +362,66 @@ def release_time(profile: Profile, now: dt.datetime, soc, floor: float) -> dt.da
 # --------------------------------------------------------------------------
 
 @dataclass
+class Request:
+    """An outside ask for a setting until a time of day, from
+    logs/request.json. `parse_request` builds one."""
+    want: int                          # SUB or SBU
+    until: dt.datetime                 # site time, naive
+    why: str = ""
+
+    @property
+    def key(self) -> tuple:
+        return (self.want, self.until.isoformat(timespec="minutes"), self.why)
+
+    @property
+    def name(self) -> str:
+        return NAMES[self.want]
+
+
+def parse_request(payload, now: dt.datetime) -> Request | None:
+    """{"want": "SUB", "until": "05:30", "why": "geyser for Fajr"} -> Request.
+
+    `until` is a time of day; it is taken as today unless that is more than
+    twelve hours in the past, when it means tomorrow (a request written at
+    23:50 until 00:20 crosses midnight). Junk, an unknown setting or an
+    `until` already passed give None.
+
+    >>> now = dt.datetime(2026, 9, 22, 4, 0)
+    >>> r = parse_request({"want": "SUB", "until": "05:30", "why": "geyser"}, now)
+    >>> r.name, r.until.isoformat(timespec="minutes"), r.why
+    ('SUB', '2026-09-22T05:30', 'geyser')
+    >>> parse_request({"want": "sbu", "until": "00:20"}, dt.datetime(2026, 9, 22, 23, 50)).until.day
+    23
+    >>> parse_request({"want": "SUB", "until": "03:00"}, now) is None      # passed
+    True
+    >>> parse_request({"want": "UTI", "until": "05:30"}, now) is None      # not ours
+    True
+    >>> parse_request("junk", now) is None
+    True
+    """
+    if not isinstance(payload, dict):
+        return None
+    want = payload.get("want")
+    if isinstance(want, str):
+        want = {"SUB": SUB, "SBU": SBU}.get(want.strip().upper())
+    if want not in (SUB, SBU):
+        return None
+    minutes = parse_hm(payload.get("until"))
+    if minutes is None:
+        return None
+    until = now.replace(hour=minutes // 60, minute=minutes % 60, second=0, microsecond=0)
+    if until < now - dt.timedelta(hours=12):
+        until += dt.timedelta(days=1)
+    if until <= now:
+        return None
+    why = payload.get("why")
+    return Request(want, until, str(why) if why else "")
+
+
+@dataclass
 class Decision:
     want: int                          # SUB or SBU
-    phase: str                         # floor | day | hold | night
+    phase: str                         # floor | requested | day | hold | night
     reason: str
     release_at: dt.datetime | None = None
     need_wh: float = 0.0
@@ -343,17 +429,28 @@ class Decision:
     floor_hold: bool = False
     in_window: bool = False
     turnaround_at: dt.datetime | None = None
+    until: dt.datetime | None = None   # requested: when the hold ends
+    request: dict | None = None        # what became of the request, if any
 
     @property
     def name(self) -> str:
         return NAMES[self.want]
+
+    @property
+    def headroom_wh(self) -> float:
+        """What is above the floor beyond the expected draw to the
+        turnaround: the watt-hours an outside caller may spend on the pack
+        without pushing the plan to the floor early."""
+        return max(0.0, self.usable_wh - self.need_wh)
 
 
 class Governor:
     """Turns time and SOC into SUB or SBU. Remembers two things: that the
     floor was hit (held until the sun lifts the pack past the resume
     level) and that tonight's reserve was released (held until the floor
-    or the sun, so a wobble in the estimate cannot take it back).
+    or the sun, so a wobble in the estimate cannot take it back). And a
+    third, when there is one: the request it is honouring, with when it
+    first saw it, so the cap on a hold counts from then.
 
     >>> prof = build_profile([_fake_day("2026-09-21")])
     >>> gov = Governor(floor=30, resume=35)
@@ -377,17 +474,85 @@ class Governor:
     'day'
     >>> gov.decide(prof, dt.datetime(2026, 9, 23, 17, 30), 100).phase   # a new night
     'hold'
+
+    A request rides over the plan, not over the floor, and is capped:
+
+    >>> gov = Governor(floor=30, resume=35, request_max_min=60)
+    >>> ask = parse_request({"want": "SUB", "until": "05:30", "why": "geyser"},
+    ...                     dt.datetime(2026, 9, 23, 1, 0))
+    >>> d = gov.decide(prof, dt.datetime(2026, 9, 23, 1, 0), 85, request=ask)
+    >>> d.name, d.phase, d.until.strftime("%H:%M"), d.request["state"]
+    ('SUB', 'requested', '02:00', 'honoured')
+    >>> d = gov.decide(prof, dt.datetime(2026, 9, 23, 2, 30), 80, request=ask)
+    >>> d.phase, d.request["state"]                                    # cap passed
+    ('night', 'expired')
+    >>> d = gov.decide(prof, dt.datetime(2026, 9, 23, 3, 0), 25, request=ask)
+    >>> d.phase                                                        # floor wins
+    'floor'
+    >>> gov2 = Governor(floor=30, resume=35)
+    >>> d = gov2.decide(prof, dt.datetime(2026, 9, 23, 1, 0), 85, request=ask,
+    ...                 grid_present=False)
+    >>> d.phase, d.request["state"]
+    ('night', 'ignored')
+    >>> gov2.decide(prof, dt.datetime(2026, 9, 23, 1, 5), 85, request=ask,
+    ...             grid_present=True).request["state"]                # still
+    'ignored'
+
+    The margin holds the release back until the bursts fit too:
+
+    >>> gov3 = Governor(floor=30, resume=35, margin_wh=300)
+    >>> gov3.decide(prof, dt.datetime(2026, 9, 22, 22, 45), 80).phase
+    'hold'
+    >>> d = gov3.decide(prof, dt.datetime(2026, 9, 22, 23, 40), 80)
+    >>> d.phase, round(d.headroom_wh) >= 300
+    ('night', True)
     """
 
-    def __init__(self, floor: float = 30, resume: float = 35):
+    def __init__(self, floor: float = 30, resume: float = 35,
+                 margin_wh: float = 0.0, request_max_min: float = 60):
         self.floor = float(floor)
         self.resume = max(float(resume), self.floor)
+        self.margin_wh = max(0.0, float(margin_wh))
+        self.request_max = dt.timedelta(minutes=max(1.0, float(request_max_min)))
         self.floor_hold = False
         self.released_night: dt.date | None = None
+        self._request_key: tuple | None = None
+        self._request_seen: dt.datetime | None = None
+        self._request_ignored = False
 
-    def decide(self, profile: Profile, now: dt.datetime, soc) -> Decision:
+    def _weigh_request(self, request: Request | None, now: dt.datetime,
+                       grid_present: bool) -> tuple[dt.datetime | None, dict | None]:
+        """The effective end of the hold (None if there is nothing to
+        honour) and the `request` payload for the record."""
+        if request is None:
+            self._request_key = self._request_seen = None
+            self._request_ignored = False
+            return None, None
+        if request.key != self._request_key:
+            self._request_key = request.key
+            self._request_seen = now
+            self._request_ignored = not grid_present
+        record = {"want": request.name, "why": request.why,
+                  "until": request.until.strftime("%H:%M")}
+        if self._request_ignored:
+            record["state"] = "ignored"
+            record["note"] = "the grid was absent when it arrived"
+            return None, record
+        until = min(request.until, self._request_seen + self.request_max)
+        record["until"] = until.strftime("%H:%M")
+        if until < request.until:
+            record["note"] = "capped at %d minutes" % (self.request_max.total_seconds() // 60)
+        if now >= until:
+            record["state"] = "expired"
+            return None, record
+        record["state"] = "honoured"
+        return until, record
+
+    def decide(self, profile: Profile, now: dt.datetime, soc,
+               request: Request | None = None, grid_present: bool = True) -> Decision:
         window = in_window(profile, now)
         target = next_turnaround(profile, now)
+        until, asked = self._weigh_request(request, now, grid_present)
 
         if soc is not None:
             if soc <= self.floor:
@@ -395,33 +560,51 @@ class Governor:
             elif self.floor_hold and window and soc >= self.resume:
                 self.floor_hold = False
 
+        usable = usable_wh(profile, soc, self.floor)
+        need = 0.0 if window else need_wh(profile, now, target)
+
         if self.floor_hold:
             return Decision(
                 SUB, "floor",
                 "pack at the floor (%.0f%%) - grid carries the house until the "
                 "sun lifts it past %.0f%%" % (self.floor, self.resume),
                 floor_hold=True, in_window=window, turnaround_at=target,
-                usable_wh=usable_wh(profile, soc, self.floor))
+                usable_wh=usable, need_wh=need, request=asked)
+
+        if until is not None:
+            return Decision(
+                request.want, "requested",
+                "requested: %s until %s%s" % (
+                    request.name, until.strftime("%H:%M"),
+                    " (%s)" % request.why if request.why else ""),
+                in_window=window, turnaround_at=target, until=until,
+                usable_wh=usable, need_wh=need, request=asked)
+
+        note = ""
+        if asked and asked["state"] == "ignored":
+            note = " - request for %s ignored, %s" % (asked["want"], asked["note"])
+        elif asked and asked["state"] == "expired":
+            note = " - request for %s expired at %s" % (asked["want"], asked["until"])
 
         if window:
             return Decision(
                 SBU, "day",
-                "the sun's window (%s-%s) - solar and the pack carry the house"
-                % (fmt_hm(profile.turnaround_min), fmt_hm(profile.dusk_min)),
-                in_window=True, turnaround_at=target)
+                "the sun's window (%s-%s) - solar and the pack carry the house%s"
+                % (fmt_hm(profile.turnaround_min), fmt_hm(profile.dusk_min), note),
+                in_window=True, turnaround_at=target, usable_wh=usable, request=asked)
 
         night = night_of(profile, now)
-        usable = usable_wh(profile, soc, self.floor)
-        need = need_wh(profile, now, target)
-        if self.released_night == night or (soc is not None and need <= usable):
+        if self.released_night == night or (soc is not None
+                                            and need + self.margin_wh <= usable):
             self.released_night = night
             return Decision(
                 SBU, "night",
-                "reserve released - the pack carries the house to the sun (~%s)"
-                % fmt_hm(profile.turnaround_min),
-                release_at=now, need_wh=need, usable_wh=usable, turnaround_at=target)
+                "reserve released - the pack carries the house to the sun (~%s)%s"
+                % (fmt_hm(profile.turnaround_min), note),
+                release_at=now, need_wh=need, usable_wh=usable, turnaround_at=target,
+                request=asked)
 
-        release = release_time(profile, now, soc, self.floor)
+        release = release_time(profile, now, soc, self.floor, self.margin_wh)
         if release is None or release >= target:
             why = ("holding the reserve for an outage - too little above the "
                    "floor to release tonight")
@@ -429,8 +612,8 @@ class Governor:
         else:
             why = ("holding the reserve for an outage - release to the pack ~%s"
                    % release.strftime("%H:%M"))
-        return Decision(SUB, "hold", why, release_at=release, need_wh=need,
-                        usable_wh=usable, turnaround_at=target)
+        return Decision(SUB, "hold", why + note, release_at=release, need_wh=need,
+                        usable_wh=usable, turnaround_at=target, request=asked)
 
 
 def headline(payload: dict | None) -> str | None:
@@ -441,6 +624,8 @@ def headline(payload: dict | None) -> str | None:
     'Would set SUB: reserve held, release ~01:10'
     >>> headline({"enabled": True, "want": "SBU", "phase": "night"})
     'Auto SBU: reserve released, pack to the sun'
+    >>> headline({"enabled": True, "want": "SUB", "phase": "requested", "until": "05:30"})
+    'Auto SUB: on request until 05:30'
     >>> headline(None) is None
     True
     """
@@ -449,6 +634,8 @@ def headline(payload: dict | None) -> str | None:
     phase = payload.get("phase")
     if phase == "floor":
         what = "at the floor, grid until the sun"
+    elif phase == "requested":
+        what = "on request until %s" % (payload.get("until") or "?")
     elif phase == "day":
         what = "the sun's window"
     elif phase == "night":

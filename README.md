@@ -157,6 +157,33 @@ The rule, in `src/policy.py`:
 - **Floor**: at or under 30 %, at any hour, **SUB**, held until the sun has
   lifted the pack past 35 % inside the day window. The 5-point gap is what
   stops it flapping at dawn.
+- **Margin**: the release waits until what is above the floor covers the
+  expected draw *and* `AUTO_RELEASE_MARGIN_WH` (300 Wh), because Switch-X
+  still grants the motor's two-minute burst and the cooker's five minutes
+  on the pack after the release. What is left beyond the draw is published
+  as `headroom_wh`: the watt-hours an outside caller may spend.
+- **Request**: an outside ask rides over the plan but never over the floor.
+  Switch-X (or `python ctl.py request SUB --until 05:30 --why "geyser"`)
+  writes `logs/request.json` -- `{"want": "SUB", "until": "HH:MM", "why":
+  "..."}` -- and the collector holds that setting as phase `requested`
+  until `until` or `AUTO_REQUEST_MAX_MIN` (60 min from when it first saw
+  the file), whichever is sooner, so a stuck file cannot keep the pack off
+  all night. Removing the file (`ctl.py request --clear`) ends the hold. A
+  request that arrives with the grid absent is ignored, and the `reason`
+  says so. The acknowledgement is the published policy: `phase`
+  `requested`, `until`, and `current` reading the setting once `QPIRI`
+  has confirmed it.
+- **The pack**: the SOC scale the episodes imply reads like the sold 5 kWh,
+  but the pack delivers about 2 kWh in practice (Oracle #29, open), so
+  every derived pack figure is capped at `BATTERY_PACK_WH_CAP` (2000 Wh).
+  The data may say less, never more; `BATTERY_PACK_WH` pins it and skips
+  the cap.
+
+The `policy` block the collector publishes in `logs/state.json` is a
+**contract** with Switch-X, which reads it instead of recomputing the
+night: `want`, `phase`, `release_at`, `turnaround`, `usable_wh`, `need_wh`,
+`floor`, `current`, and since 2026-09-22 `until`, `headroom_wh` and
+`request`. Keys are added, never renamed or dropped.
 
 `python ctl.py auto` prints the profile it read (turnaround, dusk, pack Wh
 per SOC point, efficiency, the night's hourly load), the verdict for this

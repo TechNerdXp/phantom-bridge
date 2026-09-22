@@ -407,8 +407,12 @@ def cmd_auto(args, conn, log) -> int:
     state = bridge.read_state(max_age_s=900) or {}
     soc = state.get("soc")
     naive = now.replace(tzinfo=None)
-    gov = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME)
-    decision = gov.decide(prof, naive, soc)
+    gov = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
+                          margin_wh=config.AUTO_RELEASE_MARGIN_WH,
+                          request_max_min=config.AUTO_REQUEST_MAX_MIN)
+    request = policy.parse_request(bridge.read_request(), naive)
+    grid_present = bool((state.get("flow") or {}).get("grid_present", True))
+    decision = gov.decide(prof, naive, soc, request=request, grid_present=grid_present)
     published = state.get("policy") or {}
 
     if args.json:
@@ -425,7 +429,8 @@ def cmd_auto(args, conn, log) -> int:
     switch = "ON -- the collector writes POP" if config.AUTO_PRIORITY else "OFF -- advisory only"
     print(f"\nAutomatic output priority: {switch}")
     print(f"  floor {config.AUTO_SOC_FLOOR}%  resume {config.AUTO_SOC_RESUME}%  "
-          f"dwell {config.AUTO_MIN_DWELL_S}s\n")
+          f"dwell {config.AUTO_MIN_DWELL_S}s  release margin {config.AUTO_RELEASE_MARGIN_WH} Wh"
+          f"  request cap {config.AUTO_REQUEST_MAX_MIN} min\n")
     print(f"PROFILE  from {prof.days} finished day(s)")
     print(f"  turnaround  {policy.fmt_hm(prof.turnaround_min)}   {prof.notes.get('turnaround')}")
     print(f"  dusk        {policy.fmt_hm(prof.dusk_min)}   {prof.notes.get('dusk')}")
@@ -441,9 +446,12 @@ def cmd_auto(args, conn, log) -> int:
     print(f"\nNOW      {now.strftime('%H:%M')}   SOC {soc_text}"
           + (f"  (state.json {age}s old)" if age is not None else "  (no state.json)"))
     print(f"  verdict     {decision.name}  [{decision.phase}]  {decision.reason}")
-    if decision.phase in ("hold", "night"):
+    if decision.phase in ("hold", "night", "requested") and not decision.in_window:
         print(f"  need {decision.need_wh:.0f} Wh to the turnaround, "
-              f"{decision.usable_wh:.0f} Wh above the floor")
+              f"{decision.usable_wh:.0f} Wh above the floor, "
+              f"headroom {decision.headroom_wh:.0f} Wh")
+    if decision.request:
+        print(f"  request     {decision.request}")
     if published:
         print(f"  collector   {policy.headline(published)}  (current {published.get('current')})")
         if published.get("last_write"):
@@ -461,6 +469,36 @@ def cmd_auto(args, conn, log) -> int:
         else:
             when = t.strftime("%H:%M")
         print(f"  {level:3d}%  {when}")
+    return 0
+
+
+def cmd_request(args, conn, log) -> int:
+    """Write logs/request.json, the file Switch-X writes, by hand.
+
+    The collector honours it on its next cycle: phase "requested", the
+    setting held until --until or the cap (AUTO_REQUEST_MAX_MIN), never
+    past the floor rule. Ignored if the grid is absent when it arrives.
+    """
+    import policy
+    if args.clear:
+        bridge.cancel_request()
+        print("\n  Request cleared. The collector returns to its plan on its next cycle.")
+        return 0
+    if not args.want or not args.until:
+        print("\n  Say what and until when: ctl.py request SUB --until 05:30 --why \"geyser\"")
+        return 2
+    naive = bridge.now_site().replace(tzinfo=None)
+    parsed = policy.parse_request({"want": args.want, "until": args.until, "why": args.why}, naive)
+    if parsed is None:
+        print(f"\n  Not a usable request: want {args.want!r} until {args.until!r}.")
+        return 2
+    bridge.write_request(parsed.name, args.until, args.why)
+    print(f"\n  Asked for {parsed.name} until {parsed.until.strftime('%H:%M')}"
+          f" (capped at {config.AUTO_REQUEST_MAX_MIN} min from when the collector sees it).")
+    print("  Watch policy.phase / policy.until / policy.current in logs/state.json, "
+          "or run: python ctl.py auto")
+    if bridge.read_state(max_age_s=60) is None:
+        print("\n  NOTE: no collector appears to be running, so nothing will act on it.")
     return 0
 
 
@@ -562,6 +600,13 @@ def build_parser() -> argparse.ArgumentParser:
     auto = subs.add_parser("auto", help="the SUB/SBU plan from the logs; opens no link")
     auto.add_argument("--json", action="store_true", help="the numbers, as JSON")
 
+    req = subs.add_parser("request",
+                          help="ask the autopilot for SUB or SBU until a time of day")
+    req.add_argument("want", nargs="?", choices=["SUB", "SBU", "sub", "sbu"])
+    req.add_argument("--until", metavar="HH:MM", help="site time; today, or tomorrow if passed")
+    req.add_argument("--why", default="", help="one line for the log")
+    req.add_argument("--clear", action="store_true", help="remove the request")
+
     hand = subs.add_parser("handover",
                            help="lend the dongle to the WatchPower app for a while")
     hand.add_argument("--minutes", type=float, default=15.0)
@@ -580,6 +625,7 @@ HANDLERS = {
     "time": cmd_time,
     "controls": cmd_controls,
     "set": cmd_set,
+    "request": cmd_request,
     "discover": cmd_discover,
     "auto": cmd_auto,
     "handover": cmd_handover,
