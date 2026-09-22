@@ -615,4 +615,66 @@ auto` at 06:36 with the new rule: SBU, "past the latest release 02:00",
 80 Wh above the floor. Rebuilt and restarted; the first write under the
 new rule is in the log after this entry's time.
 
+### 2026-09-22 -- the floor from the data: the SOC slides 2 points an hour at rest
+
+The owner wants the floor as low as the pack can safely go and asked for
+numbers rather than a guess: 30 was chosen because a long outage that
+drains to 20 and then an idle spell could take it to the point of no
+return, or into the grid charging at 2 A. All four days of QPIGS reads
+(36,309 samples, 2026-09-19 22:23 to 2026-09-22 06:48) say this:
+
+**At rest the SOC falls about 2 points an hour, at every level, with the
+resting voltage not moving.** Eight idle stretches of 30 minutes or more
+(grid carrying the house, no discharge, no real charge):
+
+| start | length | SOC | resting V | slide |
+|---|---|---|---|---|
+| 09-19 22:50 | 3.2 h | 72 -> 66 | 53.2 -> 53.2 | -1.9 /h |
+| 09-20 17:44 | 1.9 h | 84 -> 80 | 53.3 -> 53.3 | -2.1 /h |
+| 09-20 19:38 | 1.8 h | 79 -> 76 | 53.3 -> 53.3 | -1.7 /h |
+| 09-20 22:19 | 2.7 h | 73 -> 67 | 53.2 -> 53.3 | -2.2 /h |
+| 09-21 17:27 | 5.0 h | 84 -> 74 | 53.5 -> 53.3 | -2.0 /h |
+| 09-22 03:42 | 2.9 h | 39 -> 34 | 52.6 -> 52.6 | -1.7 /h |
+
+The voltage is flat while the number falls, so this is not the pack
+losing charge: the inverter's SOC has a clock in it. It is not a
+voltage lookup either (the voltage did not change), and the same 2/h at
+84 and at 39 rules out self-discharge of any real size. Call it what it
+is: **the SOC figure decays about 2 points an hour whatever the pack is
+doing.**
+
+**Under load it falls faster, not slower**, 5 to 10 points an hour at
+the night's 250-550 W, and about 52 Wh per point (median of nine
+episodes; 48 on the long 02:00-07:19 run of the 21st). But 2 of those
+points an hour are the same clock, so at a 250 W night load roughly
+**40 % of the SOC points spent are the decay, not energy**, and the Wh
+per real point is nearer 75. The owner's impression that it drops more
+at idle than under load is wrong as points per hour and right as waste:
+idle spends 2 points an hour for nothing.
+
+**The low end is unmeasured below 32.** The lowest ever seen is 32 % at
+52.1 V under 8-9 A (this morning); resting voltage is 52.6 V from 34
+to 40 and 53.3 V from 63 to 70. The inverter's own protection is
+voltage: back-to-utility at 46.0 V, under-voltage at 44.8 V. Nothing in
+four days has come within 6 V of it, and a LiFePO4 bus at 52 V under
+load is mid-charge, so the SOC scale's "30 %" is a long way above the
+pack's real floor. That is also the point: **the floor protects nothing
+during an outage** (the inverter runs the pack regardless of SUB/SBU
+then, down to 46.0 V); it sets how much is left when one starts, and how
+far the decay can run before the sun.
+
+Sizing, from the slide: a floor hit at 04:00 reads about 6 lower by the
+07:14 turnaround. 25 reads ~19 at dawn, 20 reads ~14; either is still a
+voltage the data has never seen. Set now, in `config.local.py`:
+**`AUTO_SOC_FLOOR = 25`, `AUTO_SOC_RESUME = 30`** (the resume only
+counts inside the sun's window, so it is "sun is back", not a wobble).
+20/30 is the next step once a night at 25 has logged the voltage there.
+Collector restarted 06:49; the pack was at 32 % on SBU and is running
+down to the new floor.
+
+Worth building next, because it is the guard the owner is actually
+describing: a **voltage floor** in the policy (SUB when the battery
+voltage under load falls under a set level, say 50 V), so the pack's
+real state, not the decaying number, is what stops the drain.
+
 ## Next entry goes here
