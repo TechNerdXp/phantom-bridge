@@ -593,4 +593,26 @@ key -- the line is written again when the real one lands, and says
 which profile it used (`placeholder` / `3 days, pack 2000 Wh`).
 Rebuilt and restarted 06:23.
 
+### 2026-09-22 -- the owner's verdict on the first night: the floor is the reserve
+
+The night above, seen from the owner's side: the plan held a 40 % pack
+on the grid from 03:18 to dawn and the pack gave nothing after that. The
+panel's timer (SUB 17:00-01:00, SBU from 02:00) would have let it run to
+the inverter's own cut-off. Two facts from the owner: the inverter's
+cut-off in practice leaves about 10 % undrained, while the plan left 40,
+which is what the automation was meant to fix, not worsen; and the SOC
+seems to fall slower under load than idle (40 -> 34 on the grid tonight
+with a 1 A trickle showing). The idle slide is parked under Oracle #29,
+the sold-vs-practical kWh question -- it is the same voltage-derived
+scale.
+
+The rule changed, not the arithmetic: `AUTO_RELEASE_LATEST = "02:00"`.
+The pack is never held past that clock; the sum can release earlier
+(a full pack on a light night) but never later, so the plan is at worst
+the timer and the pack runs to the 30 % floor, where the floor rule
+takes it back to the grid until the sun lifts it past 35 %. `ctl.py
+auto` at 06:36 with the new rule: SBU, "past the latest release 02:00",
+80 Wh above the floor. Rebuilt and restarted; the first write under the
+new rule is in the log after this entry's time.
+
 ## Next entry goes here

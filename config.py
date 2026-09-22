@@ -296,6 +296,17 @@ AUTO_FALLBACK_PACK_WH = 2000
 # bursts on this pack.
 AUTO_RELEASE_MARGIN_WH = 300
 
+# The pack is never held past this time of night, whatever the arithmetic
+# says: at this clock the reserve is released (SBU) and the pack runs the
+# house down to the floor, however long that takes. The owner's rule of
+# 2026-09-22, after the first autopilot night held a 40 % pack on the
+# grid until dawn (the release needs SOC ~45 % on the 2 kWh scale, and the
+# idle SOC slid 40 -> 34 for nothing): the floor IS the reserve. This is
+# what the panel's menu-99 timer did (SBU from 02:00) and the plan must
+# never be less generous than it; the arithmetic can only release EARLIER
+# than this, never later. None = arithmetic only.
+AUTO_RELEASE_LATEST = "02:00"
+
 # An outside request (Switch-X writes logs/request.json: {"want": "SUB",
 # "until": "HH:MM", "why": "..."}) holds that setting ahead of the plan,
 # never past the floor rule, for at most this many minutes from when the

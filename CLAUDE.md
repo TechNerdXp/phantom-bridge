@@ -201,7 +201,11 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    the moment the expected draw to the turnaround fits in what is above
    the floor, so the pack lands on the floor as the sun starts lifting it;
    SUB at the floor (30 %) at any hour, until the sun has it past 35 %
-   inside the window. Turnaround = yesterday's lowest-SOC time when it
+   inside the window. **Never held past `AUTO_RELEASE_LATEST` (02:00)**:
+   at that clock the pack is released whatever the sum says and runs to
+   the floor -- the floor is the reserve (owner, 2026-09-22, after the
+   first night held a 40 % pack on the grid till dawn). The arithmetic
+   can only release earlier than the timer did, never later. Turnaround = yesterday's lowest-SOC time when it
    fell between 03:00 and noon; dusk = the end of the last hour at a
    quarter of the best PV hour, yesterday; pack Wh = the SOC-scale median
    the episodes imply; efficiency and the hourly load from the last 7

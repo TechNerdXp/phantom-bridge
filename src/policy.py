@@ -14,7 +14,12 @@ The owner's rule (2026-09-22), which this replaces the inverter's own timer
     the moment that drains it to the floor just as the sun starts lifting
     it -- yesterday's lowest-SOC time. Eleven, two, three: whatever the
     load makes it, recomputed every cycle, so an outage that spent some of
-    the reserve pushes the release later on its own.
+    the reserve pushes the release later on its own -- but never past the
+    latest release time (config AUTO_RELEASE_LATEST, 02:00). At that clock
+    the pack is released whatever the arithmetic says and runs down to
+    the floor: the floor is the reserve, and a pack held above it all
+    night gave nothing (the first night, 2026-09-22: held at 40 %, the
+    idle SOC slid to 34 % by dawn for nothing).
   * At the floor, at any hour, SUB: the grid carries the house and the
     pack sits until the turnaround, and then until the sun has lifted it
     back over the resume level. Then SBU, the day's setting.
@@ -306,6 +311,30 @@ def next_turnaround(profile: Profile, now: dt.datetime) -> dt.datetime:
     return at
 
 
+def latest_release_at(profile: Profile, now: dt.datetime,
+                      latest_min: int | None) -> dt.datetime | None:
+    """The moment tonight's reserve is released regardless: the latest
+    clock on the current night. A clock before dusk (02:00) is the small
+    hours of the next morning; one after dusk (23:00) is the same evening.
+
+    >>> prof = build_profile([], default_dusk="17:00")
+    >>> latest_release_at(prof, dt.datetime(2026, 9, 22, 22, 0), 2 * 60).isoformat()
+    '2026-09-23T02:00:00'
+    >>> latest_release_at(prof, dt.datetime(2026, 9, 23, 6, 0), 2 * 60).isoformat()
+    '2026-09-23T02:00:00'
+    >>> latest_release_at(prof, dt.datetime(2026, 9, 22, 22, 0), 23 * 60).isoformat()
+    '2026-09-22T23:00:00'
+    >>> latest_release_at(prof, dt.datetime(2026, 9, 22, 22, 0), None) is None
+    True
+    """
+    if latest_min is None:
+        return None
+    day = night_of(profile, now)
+    if latest_min < profile.dusk_min:
+        day += dt.timedelta(days=1)
+    return dt.datetime(day.year, day.month, day.day, latest_min // 60, latest_min % 60)
+
+
 def in_window(profile: Profile, now: dt.datetime) -> bool:
     """Inside the sun's window: from the turnaround to dusk."""
     m = _minutes(now)
@@ -498,6 +527,22 @@ class Governor:
     ...             grid_present=True).request["state"]                # still
     'ignored'
 
+    The latest-release clock overrides the arithmetic: a small pack that
+    could never satisfy the sum is still released at that hour and runs
+    to the floor, exactly as the panel's timer did:
+
+    >>> gov4 = Governor(floor=30, resume=35, margin_wh=300, latest_release="02:00")
+    >>> d = gov4.decide(prof, dt.datetime(2026, 9, 22, 23, 0), 40)
+    >>> d.phase, d.release_at.strftime("%H:%M")
+    ('hold', '02:00')
+    >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 2, 0), 40).phase
+    'night'
+    >>> gov4.decide(prof, dt.datetime(2026, 9, 23, 4, 0), 30).phase      # the floor
+    'floor'
+    >>> gov5 = Governor(floor=30, resume=35, latest_release="02:00")
+    >>> gov5.decide(prof, dt.datetime(2026, 9, 22, 23, 30), 85).phase   # earlier still
+    'night'
+
     The margin holds the release back until the bursts fit too:
 
     >>> gov3 = Governor(floor=30, resume=35, margin_wh=300)
@@ -509,10 +554,12 @@ class Governor:
     """
 
     def __init__(self, floor: float = 30, resume: float = 35,
-                 margin_wh: float = 0.0, request_max_min: float = 60):
+                 margin_wh: float = 0.0, request_max_min: float = 60,
+                 latest_release: str | None = None):
         self.floor = float(floor)
         self.resume = max(float(resume), self.floor)
         self.margin_wh = max(0.0, float(margin_wh))
+        self.latest_min = parse_hm(latest_release)
         self.request_max = dt.timedelta(minutes=max(1.0, float(request_max_min)))
         self.floor_hold = False
         self.released_night: dt.date | None = None
@@ -594,24 +641,33 @@ class Governor:
                 in_window=True, turnaround_at=target, usable_wh=usable, request=asked)
 
         night = night_of(profile, now)
-        if self.released_night == night or (soc is not None
-                                            and need + self.margin_wh <= usable):
+        latest = latest_release_at(profile, now, self.latest_min)
+        fits = soc is not None and need + self.margin_wh <= usable
+        overdue = soc is not None and latest is not None and now >= latest
+        if self.released_night == night or fits or overdue:
             self.released_night = night
             return Decision(
                 SBU, "night",
-                "reserve released - the pack carries the house to the sun (~%s)%s"
-                % (fmt_hm(profile.turnaround_min), note),
+                "reserve released - the pack carries the house to the sun (~%s)%s%s"
+                % (fmt_hm(profile.turnaround_min),
+                   " - past the latest release %s" % latest.strftime("%H:%M")
+                   if overdue and not fits else "", note),
                 release_at=now, need_wh=need, usable_wh=usable, turnaround_at=target,
                 request=asked)
 
         release = release_time(profile, now, soc, self.floor, self.margin_wh)
         if release is None or release >= target:
+            release = None
+        at_latest = (latest is not None and latest < target
+                     and (release is None or latest < release))
+        if at_latest:
+            release = latest
+        if release is None:
             why = ("holding the reserve for an outage - too little above the "
                    "floor to release tonight")
-            release = None
         else:
-            why = ("holding the reserve for an outage - release to the pack ~%s"
-                   % release.strftime("%H:%M"))
+            why = ("holding the reserve for an outage - release to the pack ~%s%s"
+                   % (release.strftime("%H:%M"), " (the latest)" if at_latest else ""))
         return Decision(SUB, "hold", why + note, release_at=release, need_wh=need,
                         usable_wh=usable, turnaround_at=target, request=asked)
 

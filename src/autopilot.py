@@ -70,7 +70,8 @@ class Autopilot:
         self.store = days.DayStore()
         self.governor = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
                                         margin_wh=config.AUTO_RELEASE_MARGIN_WH,
-                                        request_max_min=config.AUTO_REQUEST_MAX_MIN)
+                                        request_max_min=config.AUTO_REQUEST_MAX_MIN,
+                                        latest_release=config.AUTO_RELEASE_LATEST)
         self.last_request_key = None
         self.profile: policy.Profile | None = None
         self._building: dt.date | None = None
@@ -181,6 +182,7 @@ class Autopilot:
             "need_wh": round(decision.need_wh),
             "headroom_wh": round(decision.headroom_wh),
             "margin_wh": config.AUTO_RELEASE_MARGIN_WH,
+            "latest_release": config.AUTO_RELEASE_LATEST,
             "floor": config.AUTO_SOC_FLOOR, "resume": config.AUTO_SOC_RESUME,
             "floor_hold": decision.floor_hold,
             "profile_days": prof.days,

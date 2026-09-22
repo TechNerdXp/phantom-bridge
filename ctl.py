@@ -409,7 +409,8 @@ def cmd_auto(args, conn, log) -> int:
     naive = now.replace(tzinfo=None)
     gov = policy.Governor(config.AUTO_SOC_FLOOR, config.AUTO_SOC_RESUME,
                           margin_wh=config.AUTO_RELEASE_MARGIN_WH,
-                          request_max_min=config.AUTO_REQUEST_MAX_MIN)
+                          request_max_min=config.AUTO_REQUEST_MAX_MIN,
+                          latest_release=config.AUTO_RELEASE_LATEST)
     request = policy.parse_request(bridge.read_request(), naive)
     grid_present = bool((state.get("flow") or {}).get("grid_present", True))
     decision = gov.decide(prof, naive, soc, request=request, grid_present=grid_present)
