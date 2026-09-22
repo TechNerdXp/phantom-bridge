@@ -63,37 +63,66 @@ the inverter cannot tell. That needs the tests below.
 
 ## The tests
 
-Each one discriminates; none is a fishing trip. T1 and T2 cost one night
-of `config.local.py` and no hardware. T3 is the extender and the BMS.
+Each one discriminates; none is a fishing trip. T1 turned out to need no
+night at all. T2 costs one night of `config.local.py` and no hardware.
+T3 is the extender and the BMS.
 
-### T1 -- the hold night: is the slide energy?
+### T1 -- is the slide energy? Answered by the day book (part I)
 
-One night with the pack parked on the grid from dusk to dawn: in
-`config.local.py` set `AUTO_RELEASE_LATEST = "07:00"` for that night
-(the panel's menu-99 timer will flip to SBU at 02:00; the collector puts
-SUB back within `AUTO_VERIFY_INTERVAL_S`, one minute on the pack, fine).
-Expected: SOC ~83 at dusk, ~57 at dawn by the clock, resting voltage
-unchanged. **The verdict is the next morning's refill** (part G): if the
-26 lost points were energy, the refill takes 26 x 44 = ~1.1 kWh; if they
-were the number, it takes a few hundred Wh (the float top-up and the
-inverter's own draw). Over 800 Wh = real drain; under 300 = the number.
+A hold night was the first idea and the owner's objection stands: the
+panel's menu-99 timer flips to SBU at 02:00, and although the collector
+puts SUB back within its 60 s verify (the dwell does not apply, the last
+write was at dusk), the night is not clean. It is also unnecessary.
+Between one real full and the next, everything that went into the pack
+must come out again or be lost: `in x efficiency = out + hidden drain`.
+Two full cycles, at the terminals:
+
+| cycle | in | out | hidden drain at most | a real 2 pt/h slide would be |
+|---|---|---|---|---|
+| 09-20 11:08 -> 09-21 10:40 | 3343 Wh | 2941 Wh | 67 Wh (534 if the float 2 A is an offset) | ~1720 Wh |
+| 09-21 10:40 -> 09-22 10:45 | 3873 Wh | 3170 Wh | 315 Wh (758 if the float 2 A is an offset) | ~1770 Wh |
+
+The balance closes within whole-amp rounding and the inverter's own
+draw. There is no room for the slide to be energy. **Settled: the idle
+slide is the number.** (Part B's 1 A-in-while-falling stretch says the
+same thing a second way.)
 
 ### T2 -- the full-drain night: the backup figure, once and for all
 
-One night from a real full to the inverter's own cut-off, grid present as
-the safety net: `AUTO_SOC_FLOOR = 0` and `AUTO_SOC_RESUME = 5` in
-`config.local.py` for that night (the 02:00 release stands). The house
-runs from the pack until back-to-utility at 46.0 V, then the grid takes
-over seamlessly; `batt_redischarge_v = 54.0` keeps it on the grid until
-the morning charge. Integrate V x A out of the pack from full to the
+One night from a real full to the inverter's own switch, grid present as
+the net. The 02:00 release only measures from ~65 %, so the release is
+moved to the evening; the timer's 17:00 SUB is overwritten within the
+verify minute because the plan then wants SBU. In `config.local.py`, for
+one night after a full sunny day:
+
+    AUTO_RELEASE_LATEST = "18:00"   # after dusk, so it is the same evening; back to "02:00" after
+    AUTO_SOC_FLOOR = 0              # back to 25 after
+    AUTO_SOC_RESUME = 5             # back to 30 after
+
+From 18:00 the house runs on the pack until back-to-utility at 46.0 V,
+then the inverter transfers to the grid without a break (SBU with the
+grid present is a seamless transfer, the same one it makes every night
+at the floor). `batt_redischarge_v = 54.0` keeps it on the grid until
+the morning charge lifts the pack. Integrate V x A out from 18:00 to the
 switch (part D does this per run; the night is one run) -- **that number
 is the backup the pack delivers from full**, at this inverter's losses,
-and the rest-voltage / loaded-voltage curve below 29 % that the 20/30
-floor step is waiting for. Switch-X sheds loads at 30 and 20 % on the
-pack, so the night's draw will be lighter than usual; the Wh count is
-still the Wh count. One deep cycle to 2.875 V/cell is inside LiFePO4's
-normal window; the BMS's own under-voltage cut sits below it. Do not run
-T1 and T2 on the same night, and run T2 after a full sunny day.
+plus the resting and loaded voltage below 29 % that the 20/30 floor step
+is waiting for, and how the SOC number behaves at the bottom.
+
+Will floor 0 kill it? No. What the night reaches is the inverter's
+back-to-utility at 46.0 V, 2.875 V/cell on 16 cells, which is inside a
+LiFePO4 cell's working window (2.5 V is the cell limit; a Pace BMS cuts
+discharge around 2.5-2.8 V/cell, below the inverter's line). A single
+100 % depth cycle is how a pack's capacity is rated in the first place,
+and the cells sit at the bottom for a few hours at most before the sun.
+What the night does cost: no reserve if the grid fails that night, a
+low-battery beep from the panel at some point, and Switch-X shedding
+its deferrable loads at 30 and 20 % on the pack, so the draw will be
+lighter than a normal night. The one way it does not go to plan: a weak
+cell trips the BMS before 46.0 V, the inverter loses the battery and
+goes to the grid anyway, and the BMS reconnects when the charger
+appears in the morning. That outcome is itself the answer (a cell, not
+the pack), and the BMS reading (T3) names which one.
 
 ### T3 -- the Pace BMS: cells, BMS, or neither
 

@@ -1,4 +1,4 @@
-phantom-bridge pack audit  41495 QPIGS samples  09-19 22:23 .. 09-22 13:39
+phantom-bridge pack audit  41733 QPIGS samples  09-19 22:23 .. 09-22 13:54
 battery current is whole amps in every figure below (+-0.5 A = +-27 W)
 
 ==============================================================================
@@ -11,7 +11,7 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
   2026-09-19   53.3 22:23  73   0A    0 |  73     22:23  53.3 | no charge >= 2 A logged    | -
   2026-09-20   58.9 12:57  98  27A 2667 | 100     11:08  57.7 |  53.3  82  18:32           | none
   2026-09-21   58.5 10:38  97  30A 2572 | 100     10:40  57.7 |  53.4  83  18:03           | none
-  2026-09-22   58.5 10:42  97  32A 2666 | 100     10:45  57.7 |  56.4 100  13:39           | none
+  2026-09-22   58.5 10:42  97  32A 2666 | 100     10:45  57.7 |  58.1 100  13:54           | none
 
   voltage under charge (>= 5 A), by SOC band: median V, median A, samples
     soc  30- 39  V 53.6   A 9.0   n=534
@@ -21,7 +21,7 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
     soc  70- 79  V 55.2   A 31.0   n=476
     soc  80- 89  V 55.3   A 27.0   n=688
     soc  90- 99  V 54.3   A 10.0   n=637
-    soc 100-109  V 57.9   A 8.0   n=216
+    soc 100-109  V 57.8   A 8.0   n=233
 
   highest battery voltage ever logged: 58.9 V at 09-20 12:57 (soc 98, 27 A in, pv 2667 W)
   verdict key: if the pack never passes ~55 V while the sun and the 40 A are there,
@@ -96,7 +96,7 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
 ==============================================================================
  E  METERS -- Switch-X inverter_in vs out1+out2 (grid nights), battery W vs out (pack)
 ==============================================================================
-  joined samples: 21078 of 41495 (meters log on change + keepalive; values held up to 15 min)
+  joined samples: 21316 of 41733 (meters log on change + keepalive; values held up to 15 min)
 
   E1  on the grid, dark, no discharge: inverter_in - (out1+out2) by hour (median W)
       hour   in W   in VA   out W   in-out W   inverter ac_out_w   chg A (mean)   n
@@ -141,14 +141,14 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
       the loss column against the batt W column is the inverter's own draw (the intercept) plus
       its conversion loss (the slope). Whole-amp rounding puts +-27 W on every row.
 
-  E4  B mode at float (V >= 57.0, chg 0): n=2844  dis A med 2.0  pv med 882.0 W  out med 969.0 W  pv-out med -82.0 W
+  E4  B mode at float (V >= 57.0, chg 0): n=3063  dis A med 2.0  pv med 893.0 W  out med 975.0 W  pv-out med -81.0 W
       a full pack held at 57.6 V with '2 A out' all afternoon is either the inverter's own DC draw
       taken off the battery terminal while the SCC tracks the bus, or a sensor offset. ~110 W either way.
 
   E3  inverter ac_out_w vs out1+out2, all joined samples with out > 100 W, per day (median ratio)
       2026-09-20  0.96  (n=135)
       2026-09-21  0.92  (n=11342)
-      2026-09-22  0.94  (n=9601)
+      2026-09-22  0.94  (n=9839)
 
 ==============================================================================
  F  DAY BOOK -- Wh into the pack vs out of it, per day (V x whole amps, so +-50 W)
@@ -157,7 +157,7 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
   2026-09-19       1.3            0        7    0.00      73       70    70   73
   2026-09-20      18.2         3308     1761    0.53      70       69    40  100
   2026-09-21      23.7         3415     3333    0.98      69       63    37  100
-  2026-09-22      12.9         3349     1572    0.47      63      100    29  100
+  2026-09-22      13.1         3365     1595    0.47      63      100    29  100
   a day with full coverage and the same SOC at both ends gives the round-trip: out/in near 0.9
   is a healthy LiFePO4 pack; well under that with the SOC not rising is energy the counter cannot see.
 
@@ -202,12 +202,29 @@ battery current is whole amps in every figure below (+-0.5 A = +-27 W)
       15     99 ->  92   53.2    0    2   1420  1255  B
       16     92 ->  82   52.8    0   18    821  1655  B
       17     82 ->  82   53.7    6    0    326   327  L
-  2026-09-22  full 10:45 -> last sun 13:39: soc 100 -> 100, 55 Wh in, 357 Wh out (incl. the float '2 A'), 100 held until 13:39
+  2026-09-22  full 10:45 -> last sun 13:54: soc 100 -> 100, 71 Wh in, 380 Wh out (incl. the float '2 A'), 100 held until 13:54
       hour  soc          V     chg  dis   pv    load  mode
       10    100 -> 100   57.6    0    1    663   667  B
       11    100 -> 100   57.6    0    2    845   906  B
       12    100 -> 100   57.6    0    2    906   950  B
-      13    100 -> 100   57.6    0    2    974  1018  B
+      13    100 -> 100   57.6    0    2   1148  1158  B
   the number sits at 100 for about four hours at float, then starts its 2/h slide while still AT
   57.6 V with the charger idle -- the pack is full and the counter is already counting down.
+
+==============================================================================
+ I  FULL-TO-FULL BALANCE -- Wh in vs Wh out between one real full and the next
+==============================================================================
+  in x efficiency = out + hidden drain. So hidden drain <= 0.90 x in - out, whatever the SOC
+  number did in between. A real 2 pt/h slide at 44 Wh/pt would need ~1.7 kWh of it per day.
+
+  09-20 11:08 -> 09-21 10:40  span 23.5 h, covered 23.0 h, soc low 37
+      in 3343 Wh   out 2933 Wh (of which 458 as the float '2 A')
+      hidden drain <= 76 Wh; if the float 2 A is a sensor offset, <= 534 Wh
+      a real 2 pt/h slide over the ~20 h not at 100 would be ~1720 Wh
+  09-21 10:40 -> 09-22 10:45  span 24.1 h, covered 23.0 h, soc low 29
+      in 3873 Wh   out 3170 Wh (of which 443 as the float '2 A')
+      hidden drain <= 315 Wh; if the float 2 A is a sensor offset, <= 758 Wh
+      a real 2 pt/h slide over the ~20 h not at 100 would be ~1767 Wh
+  the balance closes within a few hundred Wh, most of that whole-amp rounding and the inverter's own
+  draw. There is no room for the slide to be energy: the hold night (T1) is answered by the day book.
 

@@ -519,12 +519,49 @@ def part_h(rows):
 
 
 # ----------------------------------------------------------------------------
+# I  full-to-full balance -- the hold-night test without a hold night
+
+def part_i(rows):
+    line("=")
+    print(" I  FULL-TO-FULL BALANCE -- Wh in vs Wh out between one real full and the next")
+    line("=")
+    print("  in x efficiency = out + hidden drain. So hidden drain <= 0.90 x in - out, whatever the SOC")
+    print("  number did in between. A real 2 pt/h slide at 44 Wh/pt would need ~1.7 kWh of it per day.")
+    print()
+    fulls = []
+    for day in sorted({r["t"].date() for r in rows}):
+        f = [r for r in rows if r["t"].date() == day and r["t"].hour >= 6 and r["soc"] >= 100]
+        if f:
+            fulls.append(f[0])
+    for a, b in zip(fulls, fulls[1:]):
+        seg = [r for r in rows if a["t"] <= r["t"] <= b["t"]]
+        cin = cout = cov = flt = 0.0
+        for p, q in zip(seg, seg[1:]):
+            h = (q["t"] - p["t"]).total_seconds() / 3600
+            if 0 < h <= GAP_S / 3600:
+                cov += h
+                cin += (p["v"] * p["chg"] + q["v"] * q["chg"]) / 2 * h
+                o = (p["v"] * p["dis"] + q["v"] * q["dis"]) / 2 * h
+                cout += o
+                if p["v"] >= 57.0 and p["chg"] == 0:
+                    flt += o
+        span = hours(a["t"], b["t"])
+        print(f"  {hm(a['t'])} -> {hm(b['t'])}  span {span:.1f} h, covered {cov:.1f} h, soc low {min(r['soc'] for r in seg)}")
+        print(f"      in {cin:.0f} Wh   out {cout:.0f} Wh (of which {flt:.0f} as the float '2 A')")
+        print(f"      hidden drain <= {0.9 * cin - cout:.0f} Wh; if the float 2 A is a sensor offset, <= {0.9 * cin - (cout - flt):.0f} Wh")
+        print(f"      a real 2 pt/h slide over the ~{span - 4:.0f} h not at 100 would be ~{(span - 4) * 2 * 44:.0f} Wh")
+    print("  the balance closes within a few hundred Wh, most of that whole-amp rounding and the inverter's own")
+    print("  draw. There is no room for the slide to be energy: the hold night (T1) is answered by the day book.")
+    print()
+
+
+# ----------------------------------------------------------------------------
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=None, help="only the last N log days")
     ap.add_argument("--no-meters", action="store_true")
-    ap.add_argument("--part", default="ABCDEFGH", help="which parts to print, e.g. BD")
+    ap.add_argument("--part", default="ABCDEFGHI", help="which parts to print, e.g. BD")
     a = ap.parse_args()
     rows = load_samples(a.days)
     if not rows:
@@ -541,6 +578,7 @@ def main() -> int:
     if "F" in parts: part_f(rows)
     if "G" in parts: part_g(rows)
     if "H" in parts: part_h(rows)
+    if "I" in parts: part_i(rows)
     return 0
 
 

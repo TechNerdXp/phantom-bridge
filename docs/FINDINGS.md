@@ -730,16 +730,28 @@ crossed, 20-25 % of what does leave the pack to the inverter at light
 loads, and the owner's sense of it to a number that counts down on its
 own. Whether the cells hold 5 or 4 or 3 kWh the inverter cannot say.
 
+*Same evening, the hold night withdrawn.* The owner: the menu-99 timer
+flips to SBU at 02:00, so a hold night is not clean. It is also not
+needed. Between one real full and the next, in x efficiency = out +
+hidden drain, whatever the number did: 09-20 11:08 to 09-21 10:40, in
+3343 Wh, out 2941, hidden drain at most 67 Wh (534 if the float "2 A"
+is an offset); 09-21 10:40 to 09-22 10:45, in 3873, out 3170, at most
+315 (758). A real 2 pt/h slide would need ~1.7 kWh a day. **The idle
+slide is the number, settled twice over** (part I of the audit, and the
+1 A-in-while-falling stretch).
+
 **Not settled, and the tests that would** (details in `_labs/README.md`):
-T1, a hold night on SUB to 07:00 -- the next morning's refill says
-whether the slid points were energy (~1.1 kWh in) or the number (a few
-hundred Wh). T2, a full-drain night at floor 0 with the grid as the
-net -- V x A out from full to the 46.0 V switch is the backup figure at
-this inverter's losses, and the voltage curve below 29 % the 20/30 floor
-step waits for. T3, the Pace BMS once the extender puts it in range --
-full-charge vs design capacity, cycle count, per-cell voltages, current
-at 10 mA at rest; `probe.py`'s UDP 58899 sweep first, since an Eybond
-logger on the BMS would ride the same redirect and framing. Both config
-nights are the owner's call; nothing was changed tonight.
+T2, a full-drain night -- `AUTO_RELEASE_LATEST = "18:00"` (after dusk,
+so the same evening; the timer's 17:00 SUB is overwritten within the
+verify minute), floor 0, resume 5, grid present as the net -- V x A out
+from 18:00 to the 46.0 V switch is the backup figure at this inverter's
+losses, and the voltage curve below 29 % the 20/30 floor step waits for.
+Floor 0 reaches 2.875 V/cell, inside LiFePO4's window and above a Pace
+BMS's own cut; one full-depth cycle is how capacity is rated. T3, the
+Pace BMS once the extender puts it in range -- full-charge vs design
+capacity, cycle count, per-cell voltages, current at 10 mA at rest;
+`probe.py`'s UDP 58899 sweep first, since an Eybond logger on the BMS
+would ride the same redirect and framing. The config night is the
+owner's call; nothing was changed tonight.
 
 ## Next entry goes here
