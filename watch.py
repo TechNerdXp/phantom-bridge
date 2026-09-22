@@ -953,14 +953,17 @@ class WatchWindow:
             colour = (INK if cut["sure"] else INK_DIM) if cut["ahead"] else INK_FAINT
             self._mono(hdc, ("" if cut["sure"] else "~") + policy.fmt_hm(cut["at"]),
                        x - 26, label_y, 52, 14, colour, 10)
-        # Both ends are the same turnaround -- the rule is cut on it, and
-        # the next day starts at the right edge. Saying so is what stops the
-        # edge being read as whatever cut happens to sit near it.
+        # The ends, which is where the day is cut. The turnaround itself is
+        # the boundary instant, so this day's first minute is the one after
+        # it and its last is the next one: 07:15 on the left, 07:14 on the
+        # right. Printing the same minute at both ends would put it in two
+        # days at once (owner, 2026-09-23).
         if sun and sun[0] is not None:
-            edge = policy.fmt_hm(self._first_after(sun[0], origin))
-            for at, align in ((x0 - 2, DT_LEFT), (x0 + w - 38, DT_RIGHT)):
+            cut = self._first_after(sun[0], origin)
+            for at, align, text in ((x0 - 2, DT_LEFT, policy.fmt_hm(cut + 1)),
+                                    (x0 + w - 38, DT_RIGHT, policy.fmt_hm(cut + self.DAY_MIN))):
                 if not any(abs(at + 20 - other) < 24 for other in taken):
-                    self._mono(hdc, edge, at, label_y, 40, 14, INK_FAINT, 9, align)
+                    self._mono(hdc, text, at, label_y, 40, 14, INK_FAINT, 9, align)
                     taken.append(at + 20)
         # the round hours that fall inside the window, wherever they land
         for hour in (0, 6, 12, 18):
