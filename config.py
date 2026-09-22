@@ -100,6 +100,15 @@ SESSION_COMMANDS = ["QPI", "QID", "QVFW", "QPIRI", "QFLAG"]
 # --------------------------------------------------------------------------
 
 SITE_TZ = "Asia/Karachi"
+
+# Where the panels are, for the sunrise the day's readings are hooked to
+# (src/sun.py). The sun is the one anchor no measurement can drift: dust,
+# cloud and the house's own draw all move the turnaround, and none of them
+# moves this. Degrees, north and east positive; a city centre is close
+# enough -- a tenth of a degree of longitude is 24 seconds of sunrise.
+# Overridden in config.local.py with the real position.
+SITE_LATITUDE = 24.8607
+SITE_LONGITUDE = 67.0011
 SITE_UTC_OFFSET_HOURS = 5      # fallback if the tz database is unavailable
 
 NTP_SERVERS = ["pool.ntp.org", "time.google.com", "time.cloudflare.com",

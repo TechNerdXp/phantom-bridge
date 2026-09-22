@@ -273,8 +273,15 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    the rule while the night was in watt-hours, and its evidence (the
    "idle slide wastes a held pack" night) was withdrawn by `_labs` --
    the full-to-full balance shows the slide is the number, not energy.
-   Turnaround = yesterday's lowest-SOC time when it
-   fell between 03:00 and noon, behind **two guards** (owner, 2026-09-23):
+   Turnaround = **hooked to sunrise** (`src/sun.py`, the NOAA equation from
+   `SITE_LATITUDE`/`SITE_LONGITUDE`): what is learned from the logs is the
+   OFFSET from that day's sunrise, and today's turnaround is today's
+   sunrise plus the median of the credible offsets. The season lives in
+   the sun, so two days in different months compare directly, the band is
+   the reading's own noise alone, and a run of odd days cannot walk the
+   figure away from where the sun actually is. Measured here: +52, +53,
+   +54 min. The offset is learned, never fixed, and sharpens as days
+   accumulate. The raw low still has to survive **two guards** (owner, 2026-09-23):
    it must not be before that day's first PV, because a utility charge
    lifts the pack too and that rise is not a sunrise; and it must be
    within a band the **sun itself** can explain -- `SUN_DRIFT_MIN_PER_DAY`

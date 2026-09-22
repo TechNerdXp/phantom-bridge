@@ -121,6 +121,16 @@ TURNAROUND_NOISE_MIN = 15
 # the quantum already swallows far more than a wash is worth.
 DUSK_QUANTUM_MIN = 60
 
+# How long after sunrise the pack may plausibly bottom out. The panels need
+# real irradiance before they overtake the house, never less than sunrise
+# itself and never most of the morning; anything outside this is not the
+# sun turning the pack around. Measured here: 52, 53 and 53 minutes.
+TURNAROUND_AFTER_SUNRISE = (0, 240)
+
+# Used when no day can say, with the turnaround hooked to sunrise: the
+# offset the site's mornings sit at. Only until one credible day is logged.
+DEFAULT_AFTER_SUNRISE_MIN = 50
+
 
 def drift_band(base_min: float, days: int) -> float:
     """How far a day's figure may sit from the median of `days` days before
@@ -230,6 +240,63 @@ def _dawn_low(day: dict):
     return m
 
 
+def _hooked_turnaround(lows, sunrise_of, for_date, notes):
+    """The turnaround as today's sunrise plus the offset the credible days
+    sat at, or None when nothing usable is left.
+
+    What is learned is the offset, never the clock: the season lives in
+    sunrise, so two days in different months compare directly and the band
+    is the reading's own noise. An offset outside TURNAROUND_AFTER_SUNRISE
+    is not the sun turning the pack around and is dropped.
+    """
+    offsets = []
+    for day, low in lows:
+        if low is None:
+            continue
+        try:
+            when = dt.date.fromisoformat(day.get("date"))
+        except (TypeError, ValueError):
+            continue
+        rise = sunrise_of(when)
+        if rise is None:
+            continue
+        # to the minute, once, so the offsets and the result are the same
+        # arithmetic wherever they are printed
+        gap = low - round(rise)
+        if not TURNAROUND_AFTER_SUNRISE[0] <= gap <= TURNAROUND_AFTER_SUNRISE[1]:
+            notes.setdefault("turnaround_dropped", []).append(
+                "%s: low at %s is %+d min from sunrise %s"
+                % (day.get("date"), fmt_hm(low), gap, fmt_hm(rise)))
+            continue
+        offsets.append((day, gap))
+    if not offsets:
+        return None
+
+    mid = statistics.median([g for _, g in offsets])
+    kept = []
+    for day, gap in offsets:
+        if len(offsets) >= 3 and abs(gap - mid) > TURNAROUND_NOISE_MIN:
+            notes.setdefault("turnaround_dropped", []).append(
+                "%s: %+d min after sunrise, %d off the %d-day median %+d (band %d)"
+                % (day.get("date"), gap, abs(gap - mid), len(offsets), mid,
+                   TURNAROUND_NOISE_MIN))
+            continue
+        kept.append(gap)
+    if not kept:
+        kept = [mid]
+    offset = round(statistics.median(kept))
+    today_rise = sunrise_of(for_date)
+    if today_rise is None:
+        return None
+    today_rise = round(today_rise)
+    notes["turnaround"] = (
+        "sunrise %s + %d min, the median of %d day(s)"
+        % (fmt_hm(today_rise), offset, len(kept)))
+    notes["sunrise"] = fmt_hm(today_rise)
+    notes["turnaround_offset"] = offset
+    return int(today_rise + offset)
+
+
 def _dusk_of(day: dict, fraction: float):
     """A day's dusk: the end of the last hour whose mean PV was still that
     fraction of the day's best hour, never later than the last PV seen.
@@ -267,7 +334,8 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
                   fallback_pack_wh: float = 2000.0,
                   pack_cap_wh: float | None = None,
                   fallback_efficiency: float = 0.88,
-                  fallback_points_per_kwh: float = 19.0) -> Profile:
+                  fallback_points_per_kwh: float = 19.0,
+                  sunrise_of=None, for_date: dt.date | None = None) -> Profile:
     """Read the figures out of day analyses, most recent first.
 
     Each entry is what insights.analyse_day returns for one finished day.
@@ -337,8 +405,19 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
             notes.setdefault("turnaround_dropped", []).append(
                 "%s: low at %s, first sun %s" % (d.get("date"), d.get("soc_min_at"),
                                                  d.get("pv_first") or "none"))
+
+    # Hooked to the sun, when a position is configured: what is learned is
+    # the OFFSET from that day's sunrise, not the clock reading. The season
+    # then drops out of the comparison entirely -- sunrise carries it -- so
+    # the band is the reading's own noise and nothing more, and a run of
+    # odd days cannot walk the figure away from where the sun actually is
+    # (owner, 2026-09-23). It sharpens as the days accumulate: the median
+    # of more offsets is a better offset.
+    if sunrise_of is not None and for_date is not None:
+        turnaround = _hooked_turnaround(lows, sunrise_of, for_date, notes)
+
     valid = [(d, m) for d, m in lows if m is not None]
-    if valid:
+    if turnaround is None and valid:
         mid = statistics.median([x for _, x in valid])
         band = drift_band(TURNAROUND_NOISE_MIN, len(valid))
         for d, m in valid:

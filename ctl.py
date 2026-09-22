@@ -13,6 +13,7 @@
     python ctl.py raw QPIGS                  send anything
     python ctl.py discover                   identification sweep -> FINDINGS
     python ctl.py auto                       the SUB/SBU plan: profile, verdict, release times
+    python ctl.py cleaned --note "hosed"     record a panel cleaning, for the record
     python ctl.py handover --minutes 15      lend the dongle to the phone app
     python ctl.py restore                    hand the dongle back to the cloud
 
@@ -24,6 +25,7 @@ Connection, in order of preference:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import pathlib
 import sys
 import time
@@ -454,11 +456,13 @@ def cmd_auto(args, conn, log) -> int:
         print("\nOBSERVED  (kept whether used or not -- dust drifts it late, a wash steps it early)")
         print("  %-12s %-7s %-7s %-11s %-7s %s" % ("day", "low", "sun", "turnaround",
                                                    "dusk", "last sun"))
+        washed = {e["date"] for e in bridge.read_cleaned()}
         for o in observed:
-            print("  %-12s %-7s %-7s %-11s %-7s %s" % (
+            mark = "  <- cleaned" if o.get("date") in washed else ""
+            print("  %-12s %-7s %-7s %-11s %-7s %s%s" % (
                 o.get("date") or "?", o.get("low") or "-", o.get("sun") or "-",
                 o.get("turnaround") or "rejected", o.get("dusk") or "rejected",
-                o.get("pv_last") or "-"))
+                o.get("pv_last") or "-", mark))
         for key in ("turnaround_dropped", "dusk_dropped"):
             for line in prof.notes.get(key) or []:
                 print(f"  dropped   {line}")
@@ -503,6 +507,48 @@ def cmd_auto(args, conn, log) -> int:
         else:
             when = t.strftime("%H:%M")
         print(f"  {level:3d}%  {when}")
+    return 0
+
+
+def cmd_cleaned(args, conn, log) -> int:
+    """Record a panel cleaning. Opens no link.
+
+    The logs see the step -- the turnaround jumps earlier the morning after
+    a wash, because the panels make more at the same hour -- but not the
+    cause. Writing the cause down is what turns that step from noise into
+    a measurement of how fast this site soils, and so into an answer about
+    when it is worth cleaning again.
+    """
+    events = bridge.read_cleaned()
+    if not args.show:
+        try:
+            day = (dt.date.fromisoformat(args.date) if args.date
+                   else bridge.now_site().date())
+        except ValueError:
+            print(f"not a date: {args.date}  (want YYYY-MM-DD)")
+            return 2
+        if day > bridge.now_site().date():
+            print(f"{day} is in the future")
+            return 2
+        events = bridge.add_cleaned(day, args.note)
+        print(f"recorded: panels cleaned {day}" + (f" -- {args.note}" if args.note else ""))
+
+    if not events:
+        print("nothing recorded yet.  python ctl.py cleaned --note \"...\"")
+        return 0
+    print("\nPANELS CLEANED")
+    previous = None
+    for e in events:
+        try:
+            when = dt.date.fromisoformat(e["date"])
+        except ValueError:
+            continue
+        gap = f"{(when - previous).days} days later" if previous else ""
+        print(f"  {e['date']}  {gap:<16} {e.get('note') or ''}")
+        previous = when
+    since = (bridge.now_site().date() - previous).days if previous else None
+    if since is not None:
+        print(f"\n  {since} day(s) since the last one.")
     return 0
 
 
@@ -641,6 +687,14 @@ def build_parser() -> argparse.ArgumentParser:
     req.add_argument("--why", default="", help="one line for the log")
     req.add_argument("--clear", action="store_true", help="remove the request")
 
+    clean = subs.add_parser("cleaned",
+                            help="record that the panels were cleaned, for the record")
+    clean.add_argument("--date", metavar="YYYY-MM-DD",
+                       help="the day they were done (default: today)")
+    clean.add_argument("--note", default="", help="one line: how dirty, what was used")
+    clean.add_argument("--list", action="store_true", dest="show",
+                       help="print what has been recorded and stop")
+
     hand = subs.add_parser("handover",
                            help="lend the dongle to the WatchPower app for a while")
     hand.add_argument("--minutes", type=float, default=15.0)
@@ -662,6 +716,7 @@ HANDLERS = {
     "request": cmd_request,
     "discover": cmd_discover,
     "auto": cmd_auto,
+    "cleaned": cmd_cleaned,
     "handover": cmd_handover,
     "restore": cmd_restore,
 }

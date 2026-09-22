@@ -652,6 +652,40 @@ def write_request(want: str, until: str, why: str = "") -> None:
     tmp.replace(REQUEST_PATH)
 
 
+# --------------------------------------------------------------------------
+# the panel-cleaning log -- the one thing about the day only a human knows
+# --------------------------------------------------------------------------
+#
+# Dust drifts the turnaround later week by week and a wash steps it back in
+# a single day. The logs can see the step but not the cause, so the cause is
+# recorded by hand (`ctl.py cleaned`) and the two are read together later:
+# how fast this site soils, and therefore when it is worth cleaning again.
+
+CLEANED_PATH = LOG_DIR / "cleaned.json"
+
+
+def read_cleaned() -> list:
+    """Every recorded panel cleaning, oldest first."""
+    try:
+        payload = json.loads(CLEANED_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    events = payload.get("events") if isinstance(payload, dict) else None
+    return [e for e in (events or []) if isinstance(e, dict) and e.get("date")]
+
+
+def add_cleaned(day: dt.date, note: str = "") -> list:
+    """Record a cleaning, replacing any entry already on that day."""
+    events = [e for e in read_cleaned() if e.get("date") != day.isoformat()]
+    events.append({"date": day.isoformat(), "note": note or "",
+                   "recorded": now_site().isoformat(timespec="minutes")})
+    events.sort(key=lambda e: e["date"])
+    LOG_DIR.mkdir(exist_ok=True)
+    CLEANED_PATH.write_text(json.dumps({"events": events}, ensure_ascii=False),
+                            encoding="utf-8")
+    return events
+
+
 def read_request() -> dict | None:
     """The request file's payload, or None if absent or unreadable."""
     try:

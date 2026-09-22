@@ -173,8 +173,15 @@ The rule, in `src/policy.py`:
   correction never eats the evening reserve. The patch is sized by the load
   at the hours it moves -- an hour at 600 W costs three times an hour at
   200 W -- never by the clock. A night with a real outage is not carried.
-- **Turnaround**: yesterday's lowest-SOC time, when it fell between 03:00 and
-  noon -- the minute the sun started pushing the pack up. Two guards, because
+- **Turnaround**: the minute the sun starts pushing the pack up -- **hooked
+  to sunrise**. What is learned from the logs is the *offset* from that day's
+  sunrise (`src/sun.py` computes sunrise from the site's latitude and
+  longitude), and today's turnaround is today's sunrise plus the median of
+  the credible offsets: +52, +53, +54 min here. The season then lives in the
+  sun rather than in the readings, so days in different months compare
+  directly and no run of odd mornings can walk the figure away from where
+  the sun actually is. The offset is learned, never fixed, and sharpens as
+  the days accumulate. The raw low still has to survive both guards: Two guards, because
   the pack rises for other reasons: a low **before that day's first PV** is
   thrown out (a utility charge lifts it too, and that rise is not a sunrise),
   and a candidate further from the recent median than the **sun itself could

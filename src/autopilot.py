@@ -29,6 +29,7 @@ import bridge
 import config
 import days
 import policy
+import sun
 
 # How many marks of the day's tape are kept. A day has two or three plan
 # changes and a handful of disagreements; the cap is only there so a
@@ -110,9 +111,21 @@ def recent_days(store: days.DayStore, today: dt.date, count: int) -> list:
     return out
 
 
+def sunrise_of(day: dt.date):
+    """Sunrise at the site, for the day's readings to be hooked to. None
+    when no position is configured, which falls the profile back to
+    comparing the clock readings with each other."""
+    lat = getattr(config, "SITE_LATITUDE", None)
+    lon = getattr(config, "SITE_LONGITUDE", None)
+    if lat is None or lon is None:
+        return None
+    return sun.sunrise_min(day, lat, lon, config.SITE_UTC_OFFSET_HOURS)
+
+
 def build_for(store: days.DayStore, today: dt.date) -> policy.Profile:
     prof = policy.build_profile(recent_days(store, today, config.AUTO_HISTORY_DAYS),
-                                **profile_kwargs())
+                                **profile_kwargs(),
+                                sunrise_of=sunrise_of, for_date=today)
     prof.built_for = today
     return prof
 
