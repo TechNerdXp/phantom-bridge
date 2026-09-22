@@ -97,6 +97,7 @@ def profile_kwargs() -> dict:
         "pack_cap_wh": config.BATTERY_PACK_WH_CAP,
         "fallback_efficiency": config.AUTO_EFFICIENCY_FALLBACK,
         "fallback_points_per_kwh": config.AUTO_POINTS_PER_KWH,
+        "turnaround_band_min": config.AUTO_TURNAROUND_BAND_MIN,
     }
 
 

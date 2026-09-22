@@ -280,6 +280,19 @@ AUTO_HISTORY_DAYS = 7
 # the house and spending the reserve an outage may need.
 AUTO_DUSK_PV_FRACTION = 0.25
 
+# How far a morning's offset from sunrise may sit from the median of the
+# credible days before it is not believed. This is the padding on the next
+# turnaround: with the offset at +53, a band of 15 believes a low anywhere
+# between sunrise+38 and sunrise+68.
+#
+# Deliberately loose for now. The measured spread here is 52-54 minutes over
+# three days -- about +-1 -- so 15 is a guess with room in it, kept wide so
+# that a panel wash, which steps the crossing earlier in a single day, is
+# believed rather than thrown away. Tighten it from `turnaround_spread`
+# (printed by `ctl.py auto`) once a month of mornings has said what the real
+# spread is, a wash and a rainy day included.
+AUTO_TURNAROUND_BAND_MIN = 15
+
 # Used only until there are days to read, or when a day has no usable
 # figure. HH:MM site time; watts.
 AUTO_DEFAULT_TURNAROUND = "07:00"

@@ -444,11 +444,13 @@ def cmd_auto(args, conn, log) -> int:
         rise = autopilot.sunrise_of(tomorrow)
         if rise is not None:
             rise = round(rise)
-            band = policy.TURNAROUND_NOISE_MIN
+            band = config.AUTO_TURNAROUND_BAND_MIN
+            spread = prof.notes.get("turnaround_spread")
             print(f"              tomorrow's sunrise {policy.fmt_hm(rise)}, so a low "
                   f"between {policy.fmt_hm(rise + offset - band)} and "
                   f"{policy.fmt_hm(rise + offset + band)} is believed "
-                  f"(+{offset} +-{band} min)")
+                  f"(+{offset} +-{band} min"
+                  + (f"; measured {spread}" if spread else "") + ")")
     print(f"  dusk        {policy.fmt_hm(prof.dusk_min)}   {prof.notes.get('dusk')}")
     print(f"  pack        {prof.pack_wh:.0f} Wh per 100% SOC   {prof.notes.get('pack_wh')}")
     print(f"  drain rate  {prof.points_per_kwh:.1f} SOC points per kWh the house draws"

@@ -240,7 +240,8 @@ def _dawn_low(day: dict):
     return m
 
 
-def _hooked_turnaround(lows, sunrise_of, for_date, notes):
+def _hooked_turnaround(lows, sunrise_of, for_date, notes,
+                       band: float = TURNAROUND_NOISE_MIN):
     """The turnaround as today's sunrise plus the offset the credible days
     sat at, or None when nothing usable is left.
 
@@ -275,11 +276,11 @@ def _hooked_turnaround(lows, sunrise_of, for_date, notes):
     mid = statistics.median([g for _, g in offsets])
     kept = []
     for day, gap in offsets:
-        if len(offsets) >= 3 and abs(gap - mid) > TURNAROUND_NOISE_MIN:
+        if len(offsets) >= 3 and abs(gap - mid) > band:
             notes.setdefault("turnaround_dropped", []).append(
                 "%s: %+d min after sunrise, %d off the %d-day median %+d (band %d)"
                 % (day.get("date"), gap, abs(gap - mid), len(offsets), mid,
-                   TURNAROUND_NOISE_MIN))
+                   round(band)))
             continue
         kept.append(gap)
     if not kept:
@@ -294,6 +295,10 @@ def _hooked_turnaround(lows, sunrise_of, for_date, notes):
         % (fmt_hm(today_rise), offset, len(kept)))
     notes["sunrise"] = fmt_hm(today_rise)
     notes["turnaround_offset"] = offset
+    notes["turnaround_band"] = round(band)
+    if len(kept) >= 2:
+        notes["turnaround_spread"] = "%+d..%+d over %d day(s)" % (
+            min(kept), max(kept), len(kept))
     return int(today_rise + offset)
 
 
@@ -335,6 +340,7 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
                   pack_cap_wh: float | None = None,
                   fallback_efficiency: float = 0.88,
                   fallback_points_per_kwh: float = 19.0,
+                  turnaround_band_min: float = TURNAROUND_NOISE_MIN,
                   sunrise_of=None, for_date: dt.date | None = None) -> Profile:
     """Read the figures out of day analyses, most recent first.
 
@@ -414,12 +420,13 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
     # (owner, 2026-09-23). It sharpens as the days accumulate: the median
     # of more offsets is a better offset.
     if sunrise_of is not None and for_date is not None:
-        turnaround = _hooked_turnaround(lows, sunrise_of, for_date, notes)
+        turnaround = _hooked_turnaround(lows, sunrise_of, for_date, notes,
+                                        turnaround_band_min)
 
     valid = [(d, m) for d, m in lows if m is not None]
     if turnaround is None and valid:
         mid = statistics.median([x for _, x in valid])
-        band = drift_band(TURNAROUND_NOISE_MIN, len(valid))
+        band = drift_band(turnaround_band_min, len(valid))
         for d, m in valid:
             if len(valid) >= 3 and abs(m - mid) > band:
                 # An incredible jump: keep the last good day instead. A
