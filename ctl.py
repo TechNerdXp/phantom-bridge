@@ -32,6 +32,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
+import arbiter
 import bridge
 import config
 import flow as flowmod
@@ -397,7 +398,6 @@ def cmd_auto(args, conn, log) -> int:
     for a range of SOCs at this moment, so the rule can be sanity-checked
     against tonight before AUTO_PRIORITY is turned on.
     """
-    import datetime as dt
     import json
     import autopilot
     import days
@@ -750,6 +750,22 @@ def main() -> int:
         if refusal is not None:
             return refusal
 
+    # One talker on the link. Without the claim this bound 8899 beside the
+    # running collector (Windows lets a second SO_REUSEADDR listener in) and
+    # re-sent redirects at a dongle already in session with it.
+    claim = None
+    if not args.dry_run:
+        claim = arbiter.LinkClaim()
+        if not claim.try_acquire(2000):
+            claim.close()
+            print("\nAnother phantom-bridge process holds the dongle link -- the "
+                  "collector, as a rule. The dongle keeps one session, so it "
+                  "cannot be shared.")
+            print("  What the collector sees:  logs/state.json, or  python ctl.py auto")
+            print("  To use the link by hand, stop the collector, run this, and "
+                  "start it again.")
+            return 1
+
     conn = None
     try:
         conn = connect(args, log)
@@ -763,6 +779,8 @@ def main() -> int:
     finally:
         if conn is not None:
             conn.close()
+        if claim is not None:
+            claim.close()
 
 
 if __name__ == "__main__":

@@ -17,11 +17,12 @@ already has.
 """
 from __future__ import annotations
 
+import pathlib
 import socket
 import sys
 import time
 
-sys.path.insert(0, "src")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
 import config
 import netutil
@@ -137,7 +138,7 @@ def main() -> int:
             print(f"   That silences WatchPower until:  python collector.py --restore")
 
     print("\n" + "=" * 62)
-    print("Set DONGLE_IP in config.py to the address above to skip discovery.")
+    print("Set DONGLE_IP in config.local.py to the address above to skip discovery.")
     print("\nBefore the dongle can reach us, Windows Firewall needs to let it in:")
     print("  " + netutil.firewall_hint(config.LOCAL_PORT))
     return 0

@@ -409,30 +409,15 @@ def render_icon(colour, fraction, soc=None, size: int = 16,
 
 def preview(soc, fraction=None, size=16) -> str:
     """ASCII rendering of the glyph, so proportions can be checked without eyes
-    on a 16 px taskbar."""
-    unit = size / 16.0
-    px = bytearray(size * size * 4)
-    text = "--" if soc is None else str(int(round(soc)))
-    bar_h = max(2, round(2 * unit))
-    bar_top = size - bar_h
-
-    scale = _fit_scale(text, size, bar_top)
-    _draw_text(px, size, text, (255, 255, 255), FILL_ALPHA, scale,
-               max(0, (bar_top - GLYPH_H * scale) // 2))
-    _rect(px, size, 0, bar_top, size, size, (255, 255, 255), EMPTY_ALPHA)
+    on a 16 px taskbar: '#' drawn, '.' the empty part of the bar."""
     if fraction is None and soc is not None:
         fraction = soc / 100.0
-    if fraction is not None:
-        filled = max(0, min(size, int(round(size * fraction))))
-        _rect(px, size, 0, bar_top, filled, size, (255, 255, 255), FILL_ALPHA)
-    out = []
-    for y in range(size):
-        row = ""
-        for x in range(size):
-            a = px[(y * size + x) * 4 + 3]
-            row += "#" if a == FILL_ALPHA else ("." if a else " ")
-        out.append(row)
-    return "\n".join(out)
+    px = render_icon((255, 255, 255), fraction, soc, size)
+    alpha = px[3::4]
+    return "\n".join(
+        "".join("#" if a == FILL_ALPHA else "." if a else " "
+                for a in alpha[y * size:(y + 1) * size])
+        for y in range(size))
 
 
 # -- reading a state into something displayable -------------------------------
@@ -797,7 +782,7 @@ class TrayWindow:
                                "Sync clock from internet")
         else:
             user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0,
-                               "Clock synced by collector (on connect, then 24h)")
+                               "Clock synced by collector (on connect, then hourly)")
         if reading.handover_s > 0:
             user32.AppendMenuW(menu, MF_STRING, ID_TAKEBACK,
                                "Take the link back now")
@@ -805,8 +790,13 @@ class TrayWindow:
             user32.AppendMenuW(
                 menu, MF_STRING, ID_HANDOVER,
                 f"Lend to WatchPower app ({HANDOVER_MINUTES} min)")
-        user32.AppendMenuW(menu, MF_STRING, ID_RESTORE,
-                           "Restore vendor cloud and stop")
+        # Following, the collector owns the link and re-sends its redirect
+        # within half a minute of losing it, so a restore from here stops
+        # nothing -- the loan above is what hands the dongle over. Only a
+        # tray that owns the link can restore and stop.
+        if self._monitor.mode != "follow":
+            user32.AppendMenuW(menu, MF_STRING, ID_RESTORE,
+                               "Restore vendor cloud and stop")
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu,
                            MF_STRING | (MF_CHECKED if autostart_enabled() else 0),

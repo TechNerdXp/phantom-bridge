@@ -982,7 +982,11 @@ class WatchWindow:
         today = state.get("today") or {}
         loan = bridge.handover_remaining()
         age = state.get("age_s", 9999)
-        fresh = bool(state) and age < 30
+        # 60 s, not 30: a healthy cycle that carries the energy back-fill, a
+        # POP write with its readback or the QPIRI verify runs up to 32 s
+        # between publishes (FINDINGS 2026-09-22, 3317 cycles measured), and
+        # 30 called that STALE a few times a day.
+        fresh = bool(state) and age < 60
 
         self._fill(hdc, 0, 0, width, height, BG)
         pad = 20
@@ -1272,11 +1276,11 @@ class WatchWindow:
             gdi32.DeleteObject(bmp)
             gdi32.DeleteDC(mem)
             user32.ReleaseDC(None, screen)
-        rows = b"".join(
-            b"\x00" + bytes(v for x in range(w)
-                            for v in (raw[(y * w + x) * 4 + 2], raw[(y * w + x) * 4 + 1],
-                                      raw[(y * w + x) * 4]))
-            for y in range(h))
+        # BGRA -> RGB by slicing, then a filter byte in front of each row.
+        rgb = bytearray(w * h * 3)
+        rgb[0::3], rgb[1::3], rgb[2::3] = raw[2::4], raw[1::4], raw[0::4]
+        stride = w * 3
+        rows = b"".join(b"\x00" + rgb[y * stride:(y + 1) * stride] for y in range(h))
 
         def chunk(kind, data):
             body = kind + data
