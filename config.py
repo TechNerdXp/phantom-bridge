@@ -127,7 +127,13 @@ HEARTBEAT_TIME_FORMAT = "bin"   # "bin" | "bcd" | "ascii" -- all unverified
 # behind, DAT set it, and QT read back within 1s of internet time.
 CLOCK_SYNC_ON_CONNECT = True
 CLOCK_MAX_DRIFT_SECONDS = 60
-CLOCK_RESYNC_HOURS = 24
+# How often the clock is checked (QT) and, past the tolerance, set (DAT).
+# Hourly, not daily: this RTC does not drift at a rate, it holds for hours
+# and then loses minutes at a time -- -46 s flat for 3.5 h on 2026-09-22 and
+# then -217 s thirteen minutes later; 751 s behind after 24 h on 09-24.
+# A daily check left it up to 12 minutes off for the menu-99 timer and the
+# day counters; an hourly one costs a QT read and an SNTP query an hour.
+CLOCK_RESYNC_HOURS = 1
 
 
 # --------------------------------------------------------------------------

@@ -175,8 +175,15 @@ def poll_forever(conn, log, idle: arbiter.Idle, *, panel: bool,
             if time.time() - last_energy >= config.ENERGY_INTERVAL:
                 # Today's counters every minute; the back-fill once per day,
                 # because it is ~60 reads the first time and 2 after that.
-                pull = (config.ENERGY_HISTORY_DAYS
-                        if history_pulled_for != now.date() else 1)
+                # Yesterday is read again only through the first hour: its
+                # counter can still move just after midnight -- the inverter
+                # counts by its own clock, which ran 12 minutes slow on
+                # 2026-09-24 -- and never after. It was re-read every minute
+                # all day: 2,880 reads a day for nothing.
+                if history_pulled_for != now.date():
+                    pull = config.ENERGY_HISTORY_DAYS
+                else:
+                    pull = 1 if now.hour == 0 else 0
                 try:
                     bridge.refresh_energy(conn, book, now.date(), log, pull)
                     history_pulled_for = now.date()
