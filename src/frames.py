@@ -6,15 +6,17 @@ Two layers live here, and they have very different confidence levels:
                   frame. CRC16-XMODEM and the 0x28/0x0D/0x0A escape rule are
                   correct. Doctested below.
 
-  Eybond (outer)  HYPOTHESIS. Reconstructed from public reverse-engineering of
-                  the Eybond Wi-Fi Plug / Shinemonitor collector. The header is
-                  8 bytes, but the length field's meaning is guesswork, so we
-                  carry several candidate DIALECTS and let the hardware pick.
+  Eybond (outer)  PROVEN 2026-09-19 on this dongle: dialect "tail". It was
+                  reconstructed from public reverse-engineering of the Eybond
+                  Wi-Fi Plug / Shinemonitor collector, with the length field's
+                  meaning a guess, so several candidate DIALECTS are carried
+                  and the hardware picks.
 
 `detect_dialects()` is how the guess gets settled: feed it the first bytes the
 dongle actually sends and it ranks the dialects that explain the stream. A
 dialect only scores if the payload it carves out is a CRC-valid PI30 response,
-which is a strong enough signal to trust.
+which is a strong enough signal to trust. It still runs on every connect, so
+a different dongle settles its own.
 """
 from __future__ import annotations
 
@@ -105,10 +107,9 @@ def parse_pi30_reply(payload: bytes) -> Reply | None:
     body, crc_rx = buf[:-2], buf[-2:]
     crc_ok = pi30_crc(body) == crc_rx
     if not crc_ok:
-        # Maybe the CRC/CR were already stripped upstream -- try the whole thing.
-        alt = buf
-        if pi30_crc(alt[:-2]) != alt[-2:]:
-            body = buf
+        # Maybe the CRC was already stripped upstream: keep every byte rather
+        # than cut two off the data.
+        body = buf
     text = body[1:].decode("ascii", "replace").strip()
     return Reply(text=text, raw=payload, crc_ok=crc_ok)
 
@@ -216,33 +217,6 @@ def detect_dialects(buf: bytes) -> list[tuple[str, str]]:
         scored.append((score, name, why))
     scored.sort(reverse=True)
     return [(name, why) for _score, name, why in scored]
-
-
-# --------------------------------------------------------------------------
-# Back-compat shims for the original spike API
-# --------------------------------------------------------------------------
-
-def eybond_frame(tid: int, payload: bytes, *, fc: int = FC_FORWARD,
-                 devcode: int = DEVCODE_VOLTRONIC,
-                 devaddr: int = DEVADDR_DEFAULT) -> bytes:
-    """Original name for build() under the default dialect."""
-    return build(payload, tid=tid, fc=fc, devcode=devcode, devaddr=devaddr)
-
-
-def parse_header(buf: bytes):
-    """Return (tid, devcode, wire_len, devaddr, fc) from the first 8 bytes."""
-    if len(buf) < HEADER_SIZE:
-        return None
-    return struct.unpack(">HHHBB", buf[:HEADER_SIZE])
-
-
-def unwrap(buf: bytes):
-    """Split a complete frame into (header_tuple, payload). None if short."""
-    taken = take_frame(buf)
-    if taken is None:
-        return None
-    header, payload, _consumed = taken
-    return header, payload
 
 
 if __name__ == "__main__":

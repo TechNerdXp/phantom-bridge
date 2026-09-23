@@ -435,6 +435,59 @@ READS: dict[str, Read] = {r.command: r for r in [
 ]}
 
 
+ENERGY_TOTALS = ("QET", "QLT")
+
+
+def plausible(command: str, text: str) -> bool:
+    """Whether a reply has the shape its command's answer must have.
+
+    The decoders are tolerant by design -- a short reply fills what it can --
+    so they will also decode an answer to a different command: the letter
+    "B" as a QPIGS sample of Nones, a QPIGS line as warning bits, a warning
+    bitfield as a day's watt-hours. All three are in the logs of
+    2026-09-20..23, from late replies taken for the next command's (see
+    link.Session.request). This is the check between the two: the shape,
+    never the values. A command with no rule passes.
+
+    >>> plausible("QPIGS", "B"), plausible("QPIWS", "247.4 50.1 219.9 50.1 0374")
+    (False, False)
+    >>> plausible("QED20260919", "000000000000000000000000000000000000")
+    False
+    >>> plausible("QPIRI", "00016156"), plausible("QMOD", "00016156")
+    (False, False)
+    >>> plausible("QMOD", "L"), plausible("QED20260919", "00012362")
+    (True, True)
+    >>> plausible("QPIWS", "100000000000000000000000000000000000")
+    True
+    >>> plausible("QPIGS", "235.9 50.4 235.9 50.4 0405 0405 006 420 53.30 010 075 "
+    ...                    "031 0000 000.0 53.30 00000 00010000 00 00 00000 010")
+    True
+    >>> plausible("QPIRI", "220.0 27.2 220.0 50.0 27.2 6000 6000 48.0 46.0 44.8 57.6 "
+    ...                    "57.6 9 002 090 0 1 3 1 10 0 0 54.0 0 1")
+    True
+    >>> plausible("QVFW", "VERFW:00060.10")
+    True
+    """
+    base = command.upper()
+    body = text.strip()
+    tokens = _split(body)
+    if base == "QMOD":
+        return len(body) == 1 and body.upper() in MODE_NAMES
+    if base == "QPIWS":
+        return len(body) >= len(WARNING_BITS) and set(body) <= {"0", "1"}
+    if base == "QPIGS":
+        # Field 17 is the status bits, eight binary digits on every firmware;
+        # a reply that reaches it is short at worst, which decode tolerates.
+        bits = tokens[16] if len(tokens) > 16 else ""
+        return len(bits) == 8 and set(bits) <= {"0", "1"}
+    if base == "QPIRI":
+        # field 17 is the output priority, a single digit 0-2
+        return len(tokens) > 16 and tokens[16] in ("0", "1", "2")
+    if base[:3] in ENERGY_PREFIXES or base in ENERGY_TOTALS:
+        return 0 < len(body) <= 8 and body.isdigit()
+    return True
+
+
 def decode(command: str, text: str) -> dict:
     """Decode a reply for `command`. Unknown commands come back as raw tokens.
 

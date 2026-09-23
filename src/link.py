@@ -15,8 +15,9 @@
 
 The session below answers FC=1 heartbeats with site-local time (goal #1's
 cheapest path), auto-detects the Eybond dialect the moment a CRC-valid PI30
-reply arrives, and serialises requests so a reply can be matched to its
-command even if the dongle does not echo our transaction id.
+reply arrives, serialises requests, and matches each reply to its command
+by the transaction id the dongle echoes -- a late reply to a command that
+timed out is dropped, not handed to the next one.
 """
 from __future__ import annotations
 
@@ -59,10 +60,10 @@ def udp_config(command: str, target: str | None, port: int,
                 log(f"  -> {dest}:{port}  {command}")
             except OSError as exc:
                 log(f"  -> {dest}:{port}  send failed: {exc}")
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             try:
-                sock.settimeout(max(0.1, deadline - time.time()))
+                sock.settimeout(max(0.1, deadline - time.monotonic()))
                 data, addr = sock.recvfrom(1024)
             except socket.timeout:
                 break
@@ -219,7 +220,17 @@ class Session:
     # -- the API ----------------------------------------------------------
 
     def request(self, command: str, timeout: float = 6.0) -> Reply:
-        """Send a PI30 command and wait for its reply. One at a time."""
+        """Send a PI30 command and wait for its reply. One at a time.
+
+        A reply is ours only if it carries our transaction id. The dongle
+        echoes it: over 2026-09-19..24 every one of 76 mismatches was the late
+        answer to the previous command, which had already timed out. Taken as
+        this command's reply, such a stray decoded a QPIGS line as warning
+        bits, the letter "B" as a QPIGS sample with every field None, and a
+        warning bitfield as a day's energy counter. So a reply with another
+        id is logged and dropped, and the wait goes on. An id of 0 is no id
+        at all (the raw dialect has no header) and is taken as it comes.
+        """
         if self.closed.is_set():
             raise LinkError("session is closed")
         with self._request_lock:
@@ -232,26 +243,29 @@ class Session:
             frame = frames.build(frames.pi30(command), tid=tid, fc=FC_FORWARD,
                                  dialect=self.dialect, devcode=self.devcode,
                                  devaddr=self.devaddr)
-            self.log({"event": "tx", "cmd": command, "tid": tid,
-                      "dialect": self.dialect, "raw": frame.hex()})
+            # A write is logged byte for byte: what went on the wire is the
+            # evidence for a setting. A query's frame is its command and id
+            # under a proven dialect, and at three per cycle those lines were
+            # a quarter of every day's log.
+            if not command.upper().startswith("Q"):
+                self.log({"event": "tx", "cmd": command, "tid": tid,
+                          "dialect": self.dialect, "raw": frame.hex()})
             self._send(frame)
 
-            deadline = time.time() + timeout
+            deadline = time.monotonic() + timeout
             while True:
-                remaining = deadline - time.time()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LinkError(f"{command}: no reply within {timeout:.0f}s")
                 try:
                     got_tid, reply = self._inbox.get(timeout=remaining)
                 except queue.Empty:
                     raise LinkError(f"{command}: no reply within {timeout:.0f}s")
-                # Only one command is ever outstanding and the inbox was
-                # drained before sending, so this reply is ours. The tid is
-                # logged rather than enforced -- whether the dongle echoes it
-                # is one of the things we are here to find out.
-                if got_tid != tid:
+                if got_tid not in (tid, 0):
                     self.log({"event": "tid-mismatch", "sent": tid,
-                              "got": got_tid, "cmd": command})
+                              "got": got_tid, "cmd": command,
+                              "action": "dropped", "text": reply.text[:48]})
+                    continue
                 return reply
 
 

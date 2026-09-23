@@ -43,7 +43,7 @@ def now_site() -> dt.datetime:
 # --------------------------------------------------------------------------
 
 def make_logger(echo: bool = True, to_file: bool = True):
-    """A JSONL logger. One file per day, UTC-stamped, append-only."""
+    """A JSONL logger. One file per site day, UTC-stamped, append-only."""
     if to_file:
         LOG_DIR.mkdir(exist_ok=True)
 
@@ -53,16 +53,37 @@ def make_logger(echo: bool = True, to_file: bool = True):
                 print(record)
             return
         record = dict(record)
+        local = now_site()
         record["ts"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        record["local"] = now_site().isoformat(timespec="seconds")
+        record["local"] = local.isoformat(timespec="seconds")
         if to_file:
-            path = LOG_DIR / f"{dt.date.today().isoformat()}.jsonl"
+            # Named by the site's day, the same day as the `local` stamp in
+            # every line, which is the day every reader asks for.
+            path = LOG_DIR / f"{local.date().isoformat()}.jsonl"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         if echo:
             print(json.dumps(record, ensure_ascii=False))
 
     return log
+
+
+def log_path(day: dt.date) -> pathlib.Path | None:
+    """A day's log: the plain JSONL, or <date>.jsonl.gz once the day has been
+    archived (days.archive_old_logs). None if the day was never logged."""
+    plain = LOG_DIR / f"{day.isoformat()}.jsonl"
+    if plain.exists():
+        return plain
+    packed = plain.with_name(plain.name + ".gz")
+    return packed if packed.exists() else None
+
+
+def open_log(path: pathlib.Path):
+    """A binary line reader over a day's log, archived or not."""
+    if path.suffix == ".gz":
+        import gzip
+        return gzip.open(path, "rb")
+    return path.open("rb")
 
 
 def quiet_logger(to_file: bool = True):
@@ -204,8 +225,14 @@ def read(conn, command: str, log=None, timeout: float | None = None) -> dict:
     else:
         record.update(ok=True, text=reply.text, crc_ok=reply.crc_ok,
                       nak=reply.is_nak, ack=reply.is_ack)
-        if not reply.is_nak and not reply.is_ack:
+        if reply.is_nak or reply.is_ack:
+            pass
+        elif pi30.plausible(command, reply.text):
             record["data"] = pi30.decode(command, reply.text)
+        else:
+            # The wrong shape for this command: an answer to another one.
+            # Kept as text, never decoded, and counted as a failed read.
+            record.update(ok=False, error=f"{command}: implausible reply")
     if log:
         log(record)
     return record
