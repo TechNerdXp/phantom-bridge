@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import glob
+import gzip
 import json
 import os
 import statistics
@@ -46,14 +47,24 @@ DECAY_PTS_PER_H = 2.0    # the idle slide measured in part B, used in part D
 # ----------------------------------------------------------------------------
 # loading
 
+def day_logs() -> list[str]:
+    """Each day's log once: the plain JSONL, or the <date>.jsonl.gz the
+    collector archives it to once it is older than yesterday."""
+    plain = glob.glob(os.path.join(LOGS, "20??-??-??.jsonl"))
+    packed = [p for p in glob.glob(os.path.join(LOGS, "20??-??-??.jsonl.gz"))
+              if p[:-3] not in plain]
+    return sorted(plain + packed, key=os.path.basename)
+
+
 def load_samples(days: int | None) -> list[dict]:
     rows = []
-    files = sorted(glob.glob(os.path.join(LOGS, "20??-??-??.jsonl")))
+    files = day_logs()
     if days:
         files = files[-days:]
     mode = None
     for path in files:
-        with open(path, encoding="utf-8") as fh:
+        opener = gzip.open if path.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as fh:
             for line in fh:
                 try:
                     rec = json.loads(line)

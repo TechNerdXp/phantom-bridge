@@ -8,9 +8,10 @@ the house, when the battery fills and when it empties.
     python insights.py --out logs/insights.txt
     python insights.py --json out.json    the numbers, for anything downstream
 
-Everything here is read from logs/<date>.jsonl and logs/energy.json. No link
-is opened, so it can run while the collector is polling and never competes
-for the dongle.
+Everything here is read from the logs and logs/energy.json, through the same
+day cache the history window and the autopilot use (src/days.py): a
+finished day is parsed once, ever. No link is opened, so it can run while
+the collector is polling and never competes for the dongle.
 
 What it is for, in the words of the plan: recorded facts to plan the next
 setup and to adjust the priority settings (SBU / USB) against, and the
@@ -39,7 +40,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
 import bridge
 import config
-import flow as flowmod
 
 # A sample gap longer than this is missing data, not a flat line.
 MAX_GAP_S = 30.0
@@ -50,42 +50,8 @@ PV_LIVE_W = 30.0
 
 
 # --------------------------------------------------------------------------
-# reading the logs
+# reading the logs -- the samples themselves come from days.DayLog
 # --------------------------------------------------------------------------
-
-def load_samples(day: dt.date) -> list[dict]:
-    """Every QPIGS sample for one day, with the mode that preceded it.
-
-    Each sample: {"t": aware datetime, "flow": analyse() output}.
-    """
-    path = bridge.LOG_DIR / f"{day.isoformat()}.jsonl"
-    if not path.exists():
-        return []
-    samples = []
-    mode = None
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("event") != "read" or not rec.get("ok"):
-                continue
-            cmd = rec.get("cmd")
-            data = rec.get("data") or {}
-            if cmd == "QMOD":
-                mode = data.get("mode")
-            elif cmd == "QPIGS" and data:
-                try:
-                    when = dt.datetime.fromisoformat(rec["local"])
-                except (KeyError, ValueError):
-                    continue
-                analysis = flowmod.analyse(
-                    data, mode=mode, trust_soc=config.TRUST_SOC,
-                    grid_present_volts=config.GRID_PRESENT_VOLTS)
-                samples.append({"t": when, "flow": analysis})
-    return samples
-
 
 def load_energy_book() -> dict:
     try:
@@ -468,8 +434,9 @@ def main() -> int:
     else:
         dates = [today - dt.timedelta(days=back) for back in range(args.days - 1, -1, -1)]
 
-    book = load_energy_book()
-    days = [analyse_day(day, load_samples(day), book.get(day.isoformat())) for day in dates]
+    import days as daysmod                  # days imports this module
+    store = daysmod.DayStore()
+    days = [store.day(day) for day in dates]
 
     text = "\n\n".join(render_day(d, hourly=not args.no_hourly) for d in days)
     if len(days) > 1:

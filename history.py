@@ -14,13 +14,13 @@ Four tabs, one window:
   DAY    Midnight to midnight as curves: solar as a filled area, the house
          as a line, the derived grid leg as a line, the state of charge on
          its own 0-100 % axis on the right. Under it the battery's strip,
-         charging up from the centre in green, discharging down in amber;
-         every on-battery episode shaded amber across both, every grid
+         charging up from the centre, discharging down, in the pack's teal;
+         every on-battery episode shaded teal across both, every grid
          outage red. Then the day's facts, its on-battery episodes, and
          its hour-by-hour profile.
 
   WEEK   The calendar week: a pair of bars per day (solar and house kWh,
-  MONTH  the battery's share as an amber inset, the trailing 7-day typical
+  MONTH  the battery's share as a teal inset, the trailing 7-day typical
          solar as a line), the typical hour of that range (average house
          and solar by hour, how often the pack was carrying it), and the
          review: totals, medians, best and worst days, when usage peaks,
@@ -50,24 +50,21 @@ from __future__ import annotations
 import calendar
 import ctypes
 import datetime as dt
-import json
 import pathlib
 import statistics
 import sys
-import time
 from ctypes import wintypes
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
 
 import bridge
 import config
-import flow as flowmod
 import insights
 import watch
-from days import DAYS_DIR, REFRESH_S, SLIM_KEYS, DayLog, DayStore  # noqa: F401
+from days import DayStore
 from watch import (BAD, BATT, BG, GRID, INK, INK_DIM, INK_FAINT, LINE, LOAD,
                    PANEL, SOLAR, DT_CENTER, DT_LEFT, DT_RIGHT, Canvas,
-                   user32)
+                   _hours, _kwh, user32)
 
 WM_KEYDOWN, WM_LBUTTONDOWN = 0x0100, 0x0201
 VK_LEFT, VK_RIGHT, VK_HOME = 0x25, 0x27, 0x24
@@ -238,19 +235,6 @@ def _segments(cols, key, x0, y_of):
     return segs
 
 
-def _hours(seconds) -> str:
-    seconds = int(seconds or 0)
-    if seconds < 60:
-        return "0 min"
-    if seconds < 3600:
-        return f"{seconds // 60} min"
-    return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
-
-
-def _kwh(wh) -> str:
-    return "--" if wh is None else f"{wh / 1000:.1f} kWh"
-
-
 def _hour_runs(hours: list[int]) -> str:
     if not hours:
         return "--"
@@ -419,13 +403,11 @@ class HistoryWindow(watch.WatchWindow):
     # -- the day tab --------------------------------------------------------------
 
     def _paint_day(self, hdc, width, height, pad):
+        # The samples first: a past day's are read from its log once and
+        # dropped with the DayLog, and the analysis below reuses that read
+        # when the day is not cached yet, rather than parsing it again.
+        samples = self.store.live(self.day).samples
         day = self.store.day(self.day)
-        samples = self.store.live(self.day).samples if self.day == bridge.now_site().date() \
-            else None
-        if samples is None:
-            # A past day: its samples are drawn from the log once, then dropped
-            # with the DayLog -- the analysis itself stays cached.
-            samples = self.store.live(self.day).samples
 
         cx0, cw = pad + 44, width - pad * 2 - 44 - 44
         main_y, main_h = 112, 200
@@ -724,7 +706,7 @@ class HistoryWindow(watch.WatchWindow):
 
     def _profile_shapes(self, cv, x0, y0, w, h, hours) -> None:
         """24 slots: house average as bars, solar as a line, the share of the
-        hour spent on the pack as an amber floor, without grid as red."""
+        hour spent on the pack as a teal floor, without grid as red."""
         cv.rect(x0, y0, w, h, PANEL, alpha=120)
         if not hours:
             return
