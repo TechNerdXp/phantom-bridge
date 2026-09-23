@@ -589,6 +589,21 @@ def build_profile(days: list, *, default_turnaround: str = "07:00",
 # arithmetic on a profile
 # --------------------------------------------------------------------------
 
+def _load_wh(profile: Profile, start: dt.datetime, end: dt.datetime) -> float:
+    """What the house is expected to draw between two moments, in watt-hours
+    at the output, walked hour by hour through the profile. Zero when the
+    span is empty."""
+    total = 0.0
+    t = start
+    while t < end:
+        edge = (t.replace(minute=0, second=0, microsecond=0)
+                + dt.timedelta(hours=1))
+        stop = min(edge, end)
+        total += profile.hourly_load_w[t.hour] * (stop - t).total_seconds() / 3600.0
+        t = stop
+    return total
+
+
 def need_wh(profile: Profile, start: dt.datetime, end: dt.datetime) -> float:
     """Battery Wh the house is expected to draw between two moments.
 
@@ -599,17 +614,7 @@ def need_wh(profile: Profile, start: dt.datetime, end: dt.datetime) -> float:
     >>> need_wh(prof, t0, t0)
     0.0
     """
-    if end <= start:
-        return 0.0
-    total = 0.0
-    t = start
-    while t < end:
-        edge = (t.replace(minute=0, second=0, microsecond=0)
-                + dt.timedelta(hours=1))
-        stop = min(edge, end)
-        total += profile.hourly_load_w[t.hour] * (stop - t).total_seconds() / 3600.0
-        t = stop
-    return total / profile.efficiency
+    return _load_wh(profile, start, end) / profile.efficiency
 
 
 def usable_wh(profile: Profile, soc, floor: float) -> float:
@@ -655,17 +660,7 @@ def cost_points(profile: Profile, start: dt.datetime, end: dt.datetime) -> float
     >>> cost_points(prof, t0, t0)
     0.0
     """
-    if end <= start:
-        return 0.0
-    total = 0.0
-    t = start
-    while t < end:
-        edge = (t.replace(minute=0, second=0, microsecond=0)
-                + dt.timedelta(hours=1))
-        stop = min(edge, end)
-        total += profile.hourly_load_w[t.hour] * (stop - t).total_seconds() / 3600.0
-        t = stop
-    return total / 1000.0 * profile.points_per_kwh
+    return _load_wh(profile, start, end) / 1000.0 * profile.points_per_kwh
 
 
 def budget_points(soc, floor: float, trim: float = 0.0) -> float:
@@ -778,37 +773,6 @@ def night_of(profile: Profile, now: dt.datetime) -> dt.date:
     return now.date()
 
 
-def release_time(profile: Profile, now: dt.datetime, soc, floor: float,
-                 margin_wh: float = 0.0) -> dt.datetime | None:
-    """When the pack can be released so it reaches the floor at the turnaround.
-
-    The first moment from now at which the expected draw up to the
-    turnaround, plus the margin, fits in what is above the floor. `now`
-    itself if it already fits; None when nothing is above the floor.
-
-    >>> prof = build_profile([_fake_day("2026-09-21")])
-    >>> now = dt.datetime(2026, 9, 22, 20, 0)
-    >>> release_time(prof, now, 80, 30).strftime("%H:%M")     # 2400 Wh usable
-    '22:40'
-    >>> release_time(prof, now, 100, 30).strftime("%H:%M")    # 3360 Wh usable
-    '21:00'
-    >>> release_time(prof, now, 30, 30) is None
-    True
-    >>> release_time(prof, now, 80, 30, margin_wh=300).strftime("%H:%M")   # later
-    '23:25'
-    """
-    usable = usable_wh(profile, soc, floor)
-    if usable <= 0:
-        return None
-    target = next_turnaround(profile, now)
-    t = now
-    while t < target:
-        if need_wh(profile, t, target) + margin_wh <= usable:
-            return t
-        t += dt.timedelta(minutes=STEP_MIN)
-    return target
-
-
 def release_at_points(profile: Profile, now: dt.datetime, soc, floor: float,
                       trim: float = 0.0, margin_points: float = 0.0,
                       end: dt.datetime | None = None) -> dt.datetime | None:
@@ -853,15 +817,54 @@ def release_at_points(profile: Profile, now: dt.datetime, soc, floor: float,
     return target
 
 
-def trim_step(day: dict, floor: float, gain: float = 0.5) -> float | None:
+def night_outage_s(day: dict, landing_min: int, eve: dict | None = None,
+                   dusk_min: int | None = None) -> float:
+    """Seconds the grid was out over the night a landing measures: the
+    evening before it from dusk (`eve`, the day before), and this morning up
+    to the landing. An outage after the landing -- the next evening's, which
+    is where they cluster -- belongs to the next night, not this one.
+
+    >>> day = {"outages": [{"start": "05:10", "duration_s": 600},
+    ...                    {"start": "21:18", "duration_s": 2400}]}
+    >>> night_outage_s(day, 7 * 60 + 14)
+    600.0
+    >>> eve = {"outages": [{"start": "16:00", "duration_s": 900},
+    ...                    {"start": "23:05", "duration_s": 420}]}
+    >>> night_outage_s(day, 7 * 60 + 14, eve, 17 * 60)     # the afternoon's is not the night's
+    1020.0
+
+    A record with no outage list says only the day's total, which is all
+    there is to go on::
+
+        >>> night_outage_s({"outage_s": 9000}, 434)
+        9000.0
+    """
+    if "outages" not in (day or {}):
+        return float((day or {}).get("outage_s") or 0)
+    total = 0.0
+    for o in day.get("outages") or []:
+        start = parse_hm(o.get("start"))
+        if start is not None and start < landing_min:
+            total += float(o.get("duration_s") or 0)
+    if eve and dusk_min is not None:
+        for o in eve.get("outages") or []:
+            start = parse_hm(o.get("start"))
+            if start is not None and start >= dusk_min:
+                total += float(o.get("duration_s") or 0)
+    return total
+
+
+def trim_step(day: dict, floor: float, gain: float = 0.5, eve: dict | None = None,
+              dusk_min: int | None = None) -> float | None:
     """What a finished night's landing says to carry into the next one.
 
     The miss is the SOC at the turnaround against the floor we aimed at:
     landed above it and there were points left unspent, so widen the window
     (positive); landed under it and it was spent too fast, so shorten it
     (negative). Half the miss by default, so one odd night cannot swing the
-    plan. None when the day cannot say -- no dawn low, or an outage spent
-    the pack for reasons of its own.
+    plan. None when the day cannot say -- no dawn low, or an outage over
+    that night (night_outage_s: `eve` is the day before, `dusk_min` its
+    dusk) spent the pack for reasons of its own.
 
     >>> trim_step({"soc_min": 36, "soc_min_at": "07:14"}, 30)
     3.0
@@ -875,13 +878,21 @@ def trim_step(day: dict, floor: float, gain: float = 0.5) -> float | None:
     True
     >>> trim_step({}, 30) is None
     True
+
+    The evening's outage comes after the morning's landing and does not
+    spoil it (2026-09-23: 40 minutes at 21:18 cancelled that morning's trim
+    while the whole day was counted)::
+
+        >>> trim_step({"soc_min": 36, "soc_min_at": "07:14", "outage_s": 2400,
+        ...            "outages": [{"start": "21:18", "duration_s": 2400}]}, 30)
+        3.0
     """
     if not day or day.get("soc_min") is None:
         return None
     at = parse_hm(day.get("soc_min_at"))
     if at is None or not (MORNING[0] <= at < MORNING[1]):
         return None
-    if (day.get("outage_s") or 0) >= OUTAGE_SPOILS_S:
+    if night_outage_s(day, at, eve, dusk_min) >= OUTAGE_SPOILS_S:
         return None
     return round((float(day["soc_min"]) - float(floor)) * gain, 2)
 

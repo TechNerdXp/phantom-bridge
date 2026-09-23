@@ -170,9 +170,25 @@ class Autopilot:
             self.profile = prof
             self.log({"event": "priority-plan", "seconds": round(time.time() - started, 1),
                       **prof.as_dict()})
-            self._apply_trim(today)
+            try:
+                self._apply_trim(today)
+            except Exception as exc:              # noqa: BLE001 -- a daemon thread
+                # dies without a word; say it, and let the archive still run
+                self.log({"event": "priority-trim-failed", "error": repr(exc)})
+            self._archive(today)
         finally:
             self._building = None
+
+    def _archive(self, today: dt.date) -> None:
+        """Compress the finished days' logs, once a day, here in the plan's
+        thread because the days it needs are cached by now. Never the loop."""
+        try:
+            done = days.archive_old_logs(self.store, today, self.log)
+        except Exception as exc:                  # noqa: BLE001 -- never the loop
+            self.log({"event": "log-archive-failed", "error": repr(exc)})
+            return
+        if done:
+            self.log({"event": "logs-archived", "days": done})
 
     def _apply_trim(self, today: dt.date) -> None:
         """Carry last night's landing into tonight, once per day. Landed
@@ -183,8 +199,20 @@ class Autopilot:
         if self.trim.get("last") == yesterday.isoformat():
             return
         rec = self.store.day(yesterday)
-        step = policy.trim_step(rec, config.AUTO_SOC_FLOOR, config.AUTO_TRIM_GAIN)
+        # The night the landing measures began the evening before.
+        eve = self.store.day(yesterday - dt.timedelta(days=1))
+        dusk = self.profile.dusk_min if self.profile else None
+        step = policy.trim_step(rec, config.AUTO_SOC_FLOOR, config.AUTO_TRIM_GAIN,
+                                eve=eve, dusk_min=dusk)
         if step is None:
+            # Said, not silent: a night that is never carried looks exactly
+            # like a trim that is not working.
+            at = policy.parse_hm(rec.get("soc_min_at"))
+            self.log({"event": "priority-trim", "night": yesterday.isoformat(),
+                      "landed": rec.get("soc_min"), "at": rec.get("soc_min_at"),
+                      "step": None, "carried": self.trim.get("points"),
+                      "night_outage_s": None if at is None else round(
+                          policy.night_outage_s(rec, at, eve, dusk))})
             return
         cap = abs(float(config.AUTO_TRIM_MAX_POINTS))
         points = round(max(-cap, min(cap, float(self.trim.get("points") or 0.0) + step)), 2)
