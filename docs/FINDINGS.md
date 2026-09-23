@@ -754,4 +754,92 @@ capacity, cycle count, per-cell voltages, current at 10 mA at rest;
 would ride the same redirect and framing. The config night is the
 owner's call; nothing was changed tonight.
 
+## 2026-09-24 -- the night beep, late replies taken for the next command's, and a clock that loses minutes in jumps
+
+A review of the build against five days of logs (09-19 22:23 to 09-24 02:00).
+
+### The beep in the night is the solar charger waking on a phantom PV voltage
+
+The owner hears the inverter's own source-change beep -- the one it gives for
+an outage or the sun coming and going -- once a night, and did at 01:47
+tonight. The logs have it on every night since 09-21:
+
+| night | beep | PV input before -> after |
+|---|---|---|
+| 09-21 | 01:00:37 | 60.4 V -> 48.7 V |
+| 09-22 | 03:18:59 | 75.4 V -> 47.8 V |
+| 09-23 | 02:31:40 | 60.4 V -> 49.2 V |
+| 09-24 | 01:47:51 | 60.2 V -> 47.9 V |
+
+`QPIWS` bit a0 is a **no-PV flag**, not a reserved or fault bit: it sets every
+evening at 18:40-18:43 as the sun goes (PV ~39 V) and clears every morning
+when it comes. In **line mode** at night the PV input creeps up with the
+panels dark and 0.0 A flowing -- 38, 45, 49, 53, 59 V over a few hours -- and
+reads 0 V whenever the inverter stage runs from the pack. At about 60.4 V,
+seven above the pack, the charger takes it for the sun: status bit
+`charging_scc` on, a0 cleared, the input pulled down to ~48 V, and the beep.
+It then stays "charging" until the real sunrise. Harmless: no transfer, no
+change to the house.
+
+Two corrections follow. **The 09-22 03:18 beep was this**, not the POP01
+write: the write moved the unit to line mode at 03:18:43, the PV input jumped
+from 50 to 75 V, and the charger woke 15 s later. The two writes at 03:41-42
+were silent because it was already awake. The flag-`y` theory and the `PDy`
+fix in that entry are withdrawn. And after the wake the inverter reports
+**1-2 A into the pack until dawn with ~5 W on the PV input** (tonight:
++106 W "charging" at 02:12). The "1 A into the pack while the SOC fell"
+(09-22 03:42-06:20, in the battery-investigation entry) was that state, so it
+is not evidence of anything by itself; the full-to-full balance, the other
+proof of the idle slide, only tightens without it. Whether those amps are
+real is open: they match the 2 A utility-charge cap, but the AC-charging bit
+stays 0 and the charger is set to solar only.
+
+### Late replies were taken for the next command's
+
+76 `tid-mismatch` rows in five days, and every one is the same thing: a
+command timed out, its answer arrived while the next command waited, and was
+returned as that command's reply. Logged, not enforced -- and decoded. The
+logs hold a QPIGS line decoded as QPIWS warning bits, the letter `B` decoded
+as a QPIGS sample with every field None, and a warning bitfield stored as a
+day's load counter (09-19, repaired by the next minute's re-read). A None
+sample reads as grid 0 V, so **6 of 09-22's 10 "outages" and 3 of 09-23's 10
+were artefacts** -- the red bands in the history window included them.
+
+The dongle echoes the transaction id faithfully, so the fix is at the
+source: a reply with another id is dropped and the wait goes on (logged
+`tid-mismatch`, `action: dropped`, with its text). Behind it, `pi30.plausible`
+refuses a reply of the wrong shape for its command before it is decoded.
+The day readers apply the same check to old logs; the day caches are rebuilt
+once (`CACHE_VERSION` 2).
+
+### The RTC loses minutes in jumps, not at a rate
+
+Every clock check so far: -46 s flat from 03:13 to 06:36 on 09-22, then
+-217 s at 06:49; -6 s flat from 22:50 to 01:12, then **-751 s** at the next
+daily check (09-24 01:12). A daily check left it up to 12 minutes off for the
+menu-99 timer and the day counters. `CLOCK_RESYNC_HOURS` is now 1: a QT read
+and an SNTP query an hour, a DAT only past the 60 s tolerance, and an hourly
+record of when the jumps happen.
+
+### The nightly trim had never run
+
+No `logs/trim.json`, and no `priority-trim` row. The outage guard read the
+whole calendar day, so the landing of the 23rd was cancelled by that
+evening's 21:18 outage, which came after it. The guard now counts the night
+the landing measures: the evening before from dusk, and the morning up to the
+landing. Last night is still not carried, rightly -- 52 and 39 minutes out on
+the evening of the 22nd -- and a night not carried is now logged, with why.
+
+### Smaller
+
+- `ctl.py` did not claim the link mutex. Windows lets a second listener bind
+  8899 beside the collector (checked), so it could jostle the live session;
+  it now refuses in 2 s with what to do instead.
+- Yesterday's energy counters were re-read every minute all day, 2,880 reads
+  a day; now only through the first hour after midnight.
+- 40 MB of log a day, 15.6:1 compressible. Days older than yesterday are
+  archived as `<date>.jsonl.gz` by the collector once their cache is
+  current, verified byte for byte before the plain file goes; query frames
+  (`tx` rows, a quarter of each day) are no longer logged, writes still are.
+
 ## Next entry goes here

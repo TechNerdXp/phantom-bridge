@@ -68,6 +68,14 @@ against the unit. What follows is measured unless it says otherwise.
   the letter to a verdict again.
 - The per-day energy counters `QED`/`QLD` (and month/year forms) answer and
   start on 2026-09-04. They are the source for "today" and the panel trend.
+- **The night beep is the solar charger waking on a phantom PV voltage**
+  (2026-09-24, FINDINGS). `QPIWS` a0 is a no-PV flag (sets at dusk, clears
+  at sunrise). In line mode at night the PV input creeps to ~60 V with the
+  panels dark; there the charger wakes, clears a0 and gives the source-change
+  beep, then reports 1-2 A into the pack until dawn with ~5 W of PV. Once a
+  night, harmless. Night charge current after that wake is not evidence.
+- **The RTC loses minutes in jumps** (flat for hours, then -171 s in 13 min;
+  -751 s in a day), hence the hourly clock check.
 
 ## The approach
 
@@ -88,7 +96,9 @@ quiet while we hold the link. `python collector.py --restore` gives it back.
 
 **Proven against the unit:** the PI30 wrapping in `src/frames.py`; the Eybond
 header including `devcode 0x0993`, `fc=4` and the `wire_len = payload + 2`
-rule (dialect `tail`, auto-confirmed from the first CRC-valid reply);
+rule (dialect `tail`, auto-confirmed from the first CRC-valid reply); the
+transaction id echoed in every reply, so a reply with another id is a late
+answer to an earlier command and is dropped (`link.Session.request`);
 `set>server=` redirect and `set>server=default;` restore; the whole read
 catalogue below; and `DAT` clock setting, verified by `QT` readback.
 
@@ -129,7 +139,8 @@ first one will be a `POP` from the autopilot, after the inverter's timer
 
 1. **Internet clock sync.** Solved and proven. `ctl.py time --sync` reads NTP,
    sends `DAT<YYMMDDHHMMSS>`, then reads `QT` back and compares — an `ACK` is
-   never taken as evidence. Runs on connect and every 24 h.
+   never taken as evidence. Runs on connect and hourly (`CLOCK_RESYNC_HOURS`),
+   writing only past the 60 s tolerance.
 2. **Load flow, especially on battery.** `src/flow.py` derives the grid leg
    from the energy balance (PI30 has no grid-power field) and renders a panel.
    On-battery is `QMOD == B` **and** discharge current > 0 — both, not either.
@@ -223,7 +234,7 @@ first one will be a `POP` from the autopilot, after the inverter's timer
    native window (tray menu "Power history", or click the day strip on the
    watch screen) with four tabs. DAY: curves -- solar area, house, derived
    grid, SOC on a right axis, a battery strip charging up / discharging
-   down, every on-battery episode shaded amber and every outage red -- then
+   down, every on-battery episode shaded teal and every outage red -- then
    the facts, the episodes and the hour-by-hour profile. WEEK / MONTH /
    YEAR: solar/house bars per day (per month for the year) with the battery
    share and the 7-day typical line, the typical hour of the range, and the
@@ -357,7 +368,7 @@ cable-overload indicator is the sum against `LOAD_LINE_RATING_A`. Decided
 | `src/bridge.py` | Shared connect/log/poll/clock-sync used by both entry points. |
 | `src/flow.py` | Power-flow derivation and the ASCII panel. |
 | `src/energy.py` | The day book: inverter counters plus integrated battery/grid Wh. Doctested. |
-| `src/days.py` | Every finished day's analysis, parsed once and cached under `logs/days/`; today read incrementally. Shared by history and the autopilot. |
+| `src/days.py` | Every finished day's analysis, parsed once and cached under `logs/days/`; today read incrementally. Shared by history, insights and the autopilot. Archives logs older than yesterday as `<date>.jsonl.gz` (the collector, daily, verified before the plain file goes); every reader takes either form. |
 | `src/policy.py` | The SUB/SBU rule: profile from day analyses, need/usable arithmetic, the Governor. Pure, doctested. |
 | `src/autopilot.py` | The collector's side of it: daily profile in a thread, QPIRI verify, POP write with readback, the `policy` payload. |
 | `src/clock.py` | SNTP client and clock encoding. Doctested. |

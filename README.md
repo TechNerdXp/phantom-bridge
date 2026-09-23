@@ -50,20 +50,28 @@ WatchPower does go quiet while we hold the link.
 config.py        site settings - edit this first
 probe.py         recon: find the dongle, report which transport is available
 collector.py     the resident poller: redirect, poll, log, publish state
-ctl.py           one-shot CLI: reads, writes, clock, discovery, restore
+ctl.py           one-shot CLI: reads, writes, clock, discovery, restore, the plan
 tray.py          Windows notification-area battery readout
 watch.py         the watch screen: a native GDI/GDI+ window, opened from the tray
+history.py       the power history window: day / week / month / year
 insights.py      usage report from the logs: peaks, sun hours, battery episodes
+main.py          the frozen exe's entry point (tray | collector)
+icon.py          writes icon.ico from the tray's own drawing (build time)
 src/frames.py    CRC, escaping, Eybond framing, dialect detection
-src/pi30.py      command catalogue + response decoders
+src/pi30.py      command catalogue, response decoders, the reply shape check
 src/link.py      transport: server / direct / dry-run links
 src/bridge.py    shared connect, log, poll, energy counters and clock-sync
 src/flow.py      power-flow derivation + the ASCII panel
 src/energy.py    the day book: inverter counters plus integrated battery/grid
+src/days.py      every day's analysis, cached; the log archive
+src/policy.py    the SUB/SBU rule (pure, doctested)
+src/autopilot.py the collector's side of the rule: verify, write, publish
+src/sun.py       sunrise and sunset for the site
 src/clock.py     SNTP client and clock encoding
 src/arbiter.py   link arbitration and the no-spin idle wait
 src/netutil.py   LAN address, broadcast and firewall helpers
-logs/            one JSONL file per day, state.json for the tray, energy.json per day
+logs/            one JSONL file per day (days older than yesterday as .jsonl.gz),
+                 state.json for the tray and Switch-X, energy.json per day
 ```
 
 ## Running it
@@ -181,7 +189,7 @@ The rule, in `src/policy.py`:
   sun rather than in the readings, so days in different months compare
   directly and no run of odd mornings can walk the figure away from where
   the sun actually is. The offset is learned, never fixed, and sharpens as
-  the days accumulate. The raw low still has to survive both guards: Two guards, because
+  the days accumulate. The raw low still has to survive two guards, because
   the pack rises for other reasons: a low **before that day's first PV** is
   thrown out (a utility charge lifts it too, and that rise is not a sunrise),
   and a candidate further from the recent median than the **sun itself could
@@ -256,7 +264,10 @@ percentage drawn into the icon, with a proportional bar under it, coloured by
 what is actually trustworthy — work mode and discharge current, not the
 percentage.
 
-- green: charging | blue: on grid, idle | amber/orange/red: drawing on the pack
+- the colour is a ladder of concern: green when nothing is coming out of the
+  pack, then a step each for not full, a heavy draw and the house on the
+  pack alone -- blue, orange, red. Under `TRAY_LOW_SOC` it is orange and
+  under `TRAY_CRITICAL_SOC` (or at `TRAY_CRITICAL_V`) red, whatever else.
 - the headline says who is carrying the house: on solar, on grid, solar +
   battery, on battery, grid out. Not the raw work mode -- `QMOD = B` is
   inverter mode, which is where the unit sits all day on solar.
@@ -265,7 +276,8 @@ percentage.
   the watch screen's arrows): a red mark in the top-right corner, alternating
   with the plain icon every half second. The digits and the bar stay the
   battery's, in the battery's colour. The tooltip names the leg.
-- Right-click for refresh, logs, clock sync, restore and start-at-login.
+- Right-click for the watch screen, the history, refresh, logs, the loan to
+  WatchPower and start-at-login.
 
 By default it opens **no link at all**: it reads `logs/state.json` that the
 collector publishes each cycle. Zero extra RS-485 traffic, zero extra dongle
@@ -393,15 +405,15 @@ the watch screen. The same native window plumbing, four tabs:
 - **Day**, midnight to midnight: solar as a filled area, the house as a
   line, the derived grid leg as a line, the state of charge as a thin line
   on its own 0-100 % axis on the right. Under it the battery's own strip,
-  charging up from the centre in green and discharging down in amber. Every
-  on-battery episode is shaded amber across both, every grid outage red, so
+  charging up from the centre and discharging down, in the pack's teal. Every
+  on-battery episode is shaded teal across both, every grid outage red, so
   *when the house runs on the pack, and why* is visible without reading a
   number. Curves break where the log has a hole rather than bridging it.
   Then the day's facts, its on-battery episodes (when, how long, watt-hours,
-  average draw, SOC start to end, the pack capacity that implies, amber for
+  average draw, SOC start to end, the pack capacity that implies, teal for
   "by priority" and red for "outage") and its hour-by-hour profile.
 - **Week** and **Month**: a pair of bars per day, solar and house kWh, with
-  the battery's share of the load as an amber inset and the trailing 7-day
+  the battery's share of the load as a teal inset and the trailing 7-day
   typical solar as a line -- the panel-cleaning trend. Under it the typical
   hour of the range: average house and solar by hour, and how much of each
   hour the pack was carrying. Then the review: totals, medians, best and
@@ -524,7 +536,7 @@ Taken from RouterOps, for the same reasons:
 No. The dongle, the collector, the tray, the watch screen and the insights
 report are all on the LAN and keep working with the internet down. The one
 thing that reaches out is the clock sync: an SNTP query with a three-second
-timeout per server, tried on connect and every 24 h. With no internet it
+timeout per server, tried on connect and hourly. With no internet it
 logs "no NTP server answered" and moves on; the logs are stamped from the PC
 clock in that case. The router and WiFi do have to be up -- the dongle is
 reached over them.
